@@ -53,6 +53,20 @@ systemctl --user enable --now quadstack
 
 For a system account without a login shell, run these with `sudo -iu <user>`. If `systemctl --user` can't find the bus, use `sudo machinectl shell <user>@`.
 
+### Logs of system accounts
+
+journald gives only accounts with UID 1000 or higher their own journal. When the Quadlets belong to a system account (UID below 1000, as created by `useradd --system` or by some managers), its logs land in the system journal, which it may not read, and Quadstack shows a warning instead of logs. Grant the account read access with ACLs, as root (replace `quadlets` with the account name):
+
+```sh
+printf '%s\n' \
+  'a+ /var/log/journal    - - - - d:user:quadlets:r-x,user:quadlets:r-x' \
+  'A+ /var/log/journal/%m - - - - d:user:quadlets:r-x,user:quadlets:r-x' \
+  > /etc/tmpfiles.d/quadstack-journal.conf
+systemd-tmpfiles --create /etc/tmpfiles.d/quadstack-journal.conf
+```
+
+This lets the account, and so anyone who can sign in to Quadstack, read the whole system journal. Adding the account to the `systemd-journal` group does the same, but only takes effect after its systemd user instance, and with it every container, restarts.
+
 ## Configuration
 
 Every setting is an environment variable. See [`deploy/quadstack.env.example`](deploy/quadstack.env.example).

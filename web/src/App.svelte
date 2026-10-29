@@ -112,6 +112,7 @@
 
   <main>
     {#if loadError}<div class="error-box">{loadError}</div>{/if}
+    {#if me?.journal}<div class="error-box">{me.journal}</div>{/if}
     {#each warnings as w}<div class="error-box">{w}</div>{/each}
 
     {#if route === '/images'}

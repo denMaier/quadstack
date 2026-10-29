@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+	"os/exec"
 	"path"
 	"strings"
 	"time"
@@ -135,7 +136,22 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 		"validation": s.cfg.QuadletBin != "",
 		"podlet":     s.cfg.PodletBin != "",
 		"terminal":   s.cfg.Terminal,
+		"journal":    journalProblem(r.Context()),
 	})
+}
+
+// journalProblem explains why this account cannot read its logs, if it cannot. journald gives
+// only accounts with UID >= 1000 their own journal files; a system account's logs land in the
+// system journal, which it may not read.
+func journalProblem(ctx context.Context) string {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	out, _ := exec.CommandContext(ctx, "journalctl", "--user", "--lines=0", "--no-pager", "--quiet").CombinedOutput()
+	if strings.Contains(string(out), "insufficient permissions") {
+		return "This account cannot read its logs: as a system account (UID below 1000) its journal is the system journal. " +
+			"See \"Logs of system accounts\" in the README for a read-only ACL that fixes this."
+	}
+	return ""
 }
 
 type stackView struct {
