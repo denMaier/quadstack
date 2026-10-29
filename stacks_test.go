@@ -129,3 +129,20 @@ func TestHistory(t *testing.T) {
 		t.Error("Create should not overwrite")
 	}
 }
+
+func TestQuadletMessages(t *testing.T) {
+	stderr := `quadlet-generator[1]: Loading source unit file /tmp/x/a.container
+quadlet-generator[1]: Loading source unit file /tmp/x/zz.container
+quadlet-generator[1]: Warning: a.container specifies the image "x" which not a fully qualified image name.
+quadlet-generator[1]: Warning: zz.container specifies the image "x" which not a fully qualified image name.
+quadlet-generator[1]: converting "zz.container": unsupported key 'BogusKey' in group 'Container' in /tmp/x/zz.container
+`
+	out, problems := quadletMessages(stderr, "a.container")
+	if len(problems) != 0 || out != `Warning: a.container specifies the image "x" which not a fully qualified image name.` {
+		t.Errorf("a: %q %q", out, problems)
+	}
+	_, problems = quadletMessages(stderr, "stack/zz.container")
+	if len(problems) != 1 || problems[0] != `converting "zz.container": unsupported key 'BogusKey' in group 'Container' in /tmp/x/zz.container` {
+		t.Errorf("zz: %q", problems)
+	}
+}

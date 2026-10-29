@@ -90,22 +90,42 @@ func (fl *Files) Validate(ctx context.Context, rel string, content *string) Vali
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	runErr := cmd.Run()
 
-	v := Validation{Output: strings.TrimSpace(stderr.String())}
+	v := Validation{}
+	var problems []string
+	// Name files relative to the Quadlet directory instead of the scratch copy
+	v.Output, problems = quadletMessages(strings.ReplaceAll(stderr.String(), tmp+string(filepath.Separator), ""), rel)
 	if content != nil {
 		if f := parseFile(target, rel); f.Unit != "" {
 			v.Generated = generatedUnit(stdout.String(), f.Unit)
 		}
 	}
-	// quadlet exits non-zero when any file fails to convert; only this file's problems block the save
-	v.OK = runErr == nil || !mentions(v.Output, rel)
-	if runErr != nil && v.Output == "" {
-		v.Output = runErr.Error()
+	// quadlet exits non-zero when any file fails to convert; only this file's errors block the save
+	v.OK = runErr == nil || len(problems) == 0
+	if !v.OK {
+		v.Output = strings.Join(problems, "\n")
 	}
 	return v
 }
 
-func mentions(output, rel string) bool {
-	return strings.Contains(output, path.Base(rel))
+// quadletMessages keeps the generator's messages about rel, without the "quadlet-generator[pid]: "
+// prefix and the "Loading source unit file" progress lines, and returns its errors separately
+func quadletMessages(stderr, rel string) (string, []string) {
+	base := path.Base(rel)
+	var mine, problems []string
+	for _, line := range strings.Split(stderr, "\n") {
+		if _, after, ok := strings.Cut(line, "]: "); ok && strings.HasPrefix(line, "quadlet-generator[") {
+			line = after
+		}
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "Loading source unit file") || !strings.Contains(line, base) {
+			continue
+		}
+		mine = append(mine, line)
+		if !strings.HasPrefix(line, "Warning:") {
+			problems = append(problems, line)
+		}
+	}
+	return strings.Join(mine, "\n"), problems
 }
 
 // generatedUnit picks one unit out of quadlet's dry-run output, which separates units with ---name--- lines
