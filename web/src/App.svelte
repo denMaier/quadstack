@@ -3,6 +3,9 @@
   import { api, type Me, type Stack } from './lib/api'
   import StackView from './lib/StackView.svelte'
   import ImagesView from './lib/ImagesView.svelte'
+  import ResourcesView from './lib/ResourcesView.svelte'
+  import SecretsView from './lib/SecretsView.svelte'
+  import { catalog, loadSecrets } from './lib/catalog.svelte'
   import ImportDialog from './lib/ImportDialog.svelte'
 
   let me = $state<Me>()
@@ -31,6 +34,7 @@
     try {
       const r = await api.stacks()
       stacks = r.stacks
+      catalog.resources = r.resources ?? []
       warnings = r.warnings ?? []
       loadError = ''
     } catch (e: any) {
@@ -53,6 +57,7 @@
   onMount(() => {
     api.me().then((m) => (me = m))
     refresh()
+    loadSecrets()
     const timer = setInterval(() => document.visibilityState === 'visible' && refresh(), 5000)
     const onHash = () => (route = location.hash.slice(1) || '/')
     addEventListener('hashchange', onHash)
@@ -76,12 +81,16 @@
     </a>
     {#if me}<span class="muted host">{me.host}</span>{/if}
     <span class="grow"></span>
-    <a href="#/images" class:active={route === '/images'}>Images</a>
+    <nav class="top">
+      <a href="#/resources" class:active={route === '/resources'}>Networks &amp; volumes</a>
+      <a href="#/secrets" class:active={route === '/secrets'}>Secrets</a>
+      <a href="#/images" class:active={route === '/images'}>Images</a>
+    </nav>
     {#if me}<span class="muted">{me.name}</span>{/if}
     <a href="/auth/logout">Sign out</a>
   </header>
 
-  <aside class:hidden-mobile={!!stackID || route === '/images'}>
+  <aside class:hidden-mobile={route !== '/'}>
     <div class="row">
       <button class="primary grow" onclick={newStack}>+ New stack</button>
       {#if me?.podlet}<button onclick={() => (importOpen = true)} title="Convert docker run or compose">Import</button>{/if}
@@ -107,6 +116,10 @@
 
     {#if route === '/images'}
       <ImagesView />
+    {:else if route === '/resources'}
+      <ResourcesView {stacks} {refresh} />
+    {:else if route === '/secrets'}
+      <SecretsView />
     {:else if stackID}
       {#if current}
         <StackView stack={current} {me} {refresh} />
@@ -128,7 +141,8 @@
         {/if}
         <p class="muted">
           A stack is a folder in the Quadlet directory, or a top-level <code>.pod</code> together with the containers
-          that set <code>Pod=</code> to it. Every other top-level unit is a stack of its own.
+          that set <code>Pod=</code> to it. Every other top-level unit is a stack of its own. Top-level networks and
+          volumes are shared; see <a href="#/resources">Networks &amp; volumes</a>.
         </p>
       </section>
     {/if}
@@ -168,6 +182,10 @@
   }
   header a.active {
     color: var(--accent);
+  }
+  .top {
+    display: flex;
+    gap: 16px;
   }
   .brand {
     display: flex;
@@ -253,6 +271,14 @@
     }
     .host {
       display: none;
+    }
+    header {
+      gap: 10px;
+      overflow-x: auto;
+      white-space: nowrap;
+    }
+    .top {
+      gap: 10px;
     }
     aside {
       border-right: 0;

@@ -9,6 +9,21 @@
   import { forceLinting, linter, type Diagnostic } from '@codemirror/lint'
   import { oneDark } from '@codemirror/theme-one-dark'
   import { sections } from './quadlet'
+  import { catalog } from './catalog.svelte'
+
+  // Values offered after Key=: shared networks and volumes, secrets
+  function valueOptions(key: string) {
+    const files = (kind: string) => catalog.resources.filter((r) => r.file.kind === kind).map((r) => r.file.path.split('/').pop()!)
+    switch (key) {
+      case 'Network':
+        return [...files('network'), 'host', 'none', 'pasta', 'slirp4netns'].map((v) => ({ label: v, type: 'variable' }))
+      case 'Volume':
+        return files('volume').map((v) => ({ label: v, apply: v + ':', type: 'variable' }))
+      case 'Secret':
+        return catalog.secrets.filter((x) => x.exists).map((x) => ({ label: x.name, detail: 'secret', type: 'constant' }))
+    }
+    return null
+  }
 
   let {
     value = $bindable(''),
@@ -28,6 +43,11 @@
     if (/^\s*\[\w*$/.test(before)) {
       const from = line.from + before.indexOf('[') + 1
       return { from, options: Object.keys(sections).map((s) => ({ label: s, apply: s + ']', type: 'namespace' })) }
+    }
+    const val = before.match(/^\s*(\w+)=([^\s:,]*)$/)
+    if (val) {
+      const options = valueOptions(val[1])
+      return options ? { from: ctx.pos - val[2].length, options } : null
     }
     const word = ctx.matchBefore(/^\s*\w*$/)
     if (!word || (word.from === word.to && !ctx.explicit)) return null

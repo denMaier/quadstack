@@ -35,8 +35,39 @@ type QFile struct {
 	Pod           string `json:"pod,omitempty"` // Pod= of a container
 	Image         string `json:"image,omitempty"`
 	ContainerName string `json:"containerName,omitempty"`
+	Name          string `json:"name,omitempty"` // Podman name of a network or volume
 	Autostart     bool   `json:"autostart"`
 	ParseError    string `json:"parseError,omitempty"`
+
+	Networks []string    `json:"networks,omitempty"` // Network= values without options
+	Mounts   []Mount     `json:"mounts,omitempty"`
+	Secrets  []SecretRef `json:"secrets,omitempty"`
+}
+
+type Mount struct {
+	Kind    string `json:"kind"` // bind, quadlet (a .volume file), volume, anonymous, tmpfs, …
+	Source  string `json:"source,omitempty"`
+	Target  string `json:"target"`
+	Options string `json:"options,omitempty"`
+}
+
+type SecretRef struct {
+	Name   string `json:"name"`
+	Type   string `json:"type"`   // mount or env
+	Target string `json:"target"` // file path or environment variable
+}
+
+// Resource is a network or volume file shared by the stacks that reference it
+type Resource struct {
+	*QFile
+	Stack  string   `json:"stack,omitempty"` // set when the file lives in a stack folder
+	UsedBy []string `json:"usedBy"`          // stack IDs
+}
+
+// Inventory is everything below the Quadlet directory
+type Inventory struct {
+	Stacks    []*Stack
+	Resources []*Resource
 }
 
 // Stack groups files like a compose project: a subdirectory, or a pod and its containers at the top level
@@ -120,6 +151,18 @@ func parseFile(abs, rel string) *QFile {
 			f.Image = o.Value
 		case o.Section == "Container" && o.Name == "ContainerName":
 			f.ContainerName = o.Value
+		case (o.Section == "Network" && o.Name == "NetworkName") || (o.Section == "Volume" && o.Name == "VolumeName"):
+			f.Name = o.Value
+		case (o.Section == "Container" || o.Section == "Pod" || o.Section == "Kube") && o.Name == "Network":
+			for _, n := range strings.Fields(o.Value) {
+				f.Networks = append(f.Networks, strings.SplitN(n, ":", 2)[0])
+			}
+		case (o.Section == "Container" || o.Section == "Pod") && o.Name == "Volume":
+			f.Mounts = append(f.Mounts, parseVolume(o.Value))
+		case o.Section == "Container" && o.Name == "Mount":
+			f.Mounts = append(f.Mounts, parseMount(o.Value))
+		case o.Section == "Container" && o.Name == "Secret":
+			f.Secrets = append(f.Secrets, parseSecret(o.Value))
 		case o.Section == "Install" && (o.Name == "WantedBy" || o.Name == "RequiredBy"):
 			f.Autostart = true
 		}
@@ -127,12 +170,84 @@ func parseFile(abs, rel string) *QFile {
 	if f.Kind == "container" && f.ContainerName == "" {
 		f.ContainerName = "systemd-" + stem
 	}
+	if (f.Kind == "network" || f.Kind == "volume") && f.Name == "" {
+		f.Name = "systemd-" + stem
+	}
 	return f
 }
 
-// ScanStacks reads the Quadlet directory. Subdirectories are stacks; at the top level a
-// .pod forms a stack with the containers that join it, and every other unit stands alone.
-func ScanStacks(root string) ([]*Stack, error) {
+// parseVolume reads Volume=[source:]target[:options]
+func parseVolume(v string) Mount {
+	parts := strings.SplitN(v, ":", 3)
+	if len(parts) == 1 {
+		return Mount{Kind: "anonymous", Target: parts[0]}
+	}
+	m := Mount{Source: parts[0], Target: parts[1]}
+	if len(parts) == 3 {
+		m.Options = parts[2]
+	}
+	switch {
+	case strings.HasPrefix(m.Source, "/") || strings.HasPrefix(m.Source, "%") || strings.HasPrefix(m.Source, "."):
+		m.Kind = "bind"
+	case strings.HasSuffix(m.Source, ".volume"):
+		m.Kind = "quadlet"
+	default:
+		m.Kind = "volume"
+	}
+	return m
+}
+
+// parseMount reads Mount=type=bind,source=…,destination=…,…
+func parseMount(v string) Mount {
+	m := Mount{Kind: "volume"}
+	var opts []string
+	for _, kv := range strings.Split(v, ",") {
+		k, val, _ := strings.Cut(kv, "=")
+		switch k {
+		case "type":
+			m.Kind = val
+		case "source", "src":
+			m.Source = val
+		case "destination", "dst", "target":
+			m.Target = val
+		default:
+			opts = append(opts, kv)
+		}
+	}
+	if m.Kind == "volume" && strings.HasSuffix(m.Source, ".volume") {
+		m.Kind = "quadlet"
+	}
+	m.Options = strings.Join(opts, ",")
+	return m
+}
+
+// parseSecret reads Secret=name[,type=mount|env][,target=…]
+func parseSecret(v string) SecretRef {
+	parts := strings.Split(v, ",")
+	r := SecretRef{Name: parts[0], Type: "mount"}
+	for _, kv := range parts[1:] {
+		k, val, _ := strings.Cut(kv, "=")
+		switch k {
+		case "type":
+			r.Type = val
+		case "target":
+			r.Target = val
+		}
+	}
+	if r.Target == "" {
+		if r.Type == "env" {
+			r.Target = r.Name
+		} else {
+			r.Target = "/run/secrets/" + r.Name
+		}
+	}
+	return r
+}
+
+// Scan reads the Quadlet directory. Subdirectories are stacks; at the top level a .pod
+// forms a stack with the containers that join it, networks and volumes are shared
+// resources, and every other unit stands alone.
+func Scan(root string) (*Inventory, error) {
 	byID := map[string]*Stack{}
 	get := func(id, name, dir string) *Stack {
 		if s, ok := byID[id]; ok {
@@ -185,6 +300,8 @@ func ScanStacks(root string) ([]*Stack, error) {
 
 	// Top level: pods first, so their containers (and drop-ins) can join them
 	owner := map[string]*Stack{} // file base (e.g. "web.pod", "app.container") -> stack
+	inv := &Inventory{}
+	shared := map[string]bool{} // stems of top-level networks and volumes
 	for _, f := range top {
 		if f.Kind == "pod" {
 			stem := strings.TrimSuffix(path.Base(f.Path), ".pod")
@@ -195,6 +312,11 @@ func ScanStacks(root string) ([]*Stack, error) {
 	}
 	for _, f := range top {
 		if f.Kind == "pod" || f.Kind == "dropin" || f.Kind == "env" {
+			continue
+		}
+		if f.Kind == "network" || f.Kind == "volume" {
+			inv.Resources = append(inv.Resources, &Resource{QFile: f})
+			shared[strings.TrimSuffix(path.Base(f.Path), path.Ext(f.Path))] = true
 			continue
 		}
 		base := path.Base(f.Path)
@@ -217,6 +339,12 @@ func ScanStacks(root string) ([]*Stack, error) {
 			key = strings.TrimSuffix(base, path.Ext(base))
 		}
 		s := owner[key]
+		stem := strings.TrimSuffix(key, path.Ext(key))
+		if s == nil && (shared[key] || shared[stem]) {
+			// a drop-in or env file of a shared network or volume
+			inv.Resources = append(inv.Resources, &Resource{QFile: f})
+			continue
+		}
 		if s == nil {
 			for b, st := range owner {
 				if strings.TrimSuffix(b, path.Ext(b)) == key {
@@ -237,7 +365,47 @@ func ScanStacks(root string) ([]*Stack, error) {
 		out = append(out, s)
 	}
 	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name) })
-	return out, nil
+	inv.Stacks = out
+
+	// Networks and volumes inside stack folders are listed as resources too
+	for _, st := range out {
+		for _, f := range st.Files {
+			if f.Kind == "network" || f.Kind == "volume" {
+				inv.Resources = append(inv.Resources, &Resource{QFile: f, Stack: st.ID})
+			}
+		}
+	}
+	for _, r := range inv.Resources {
+		r.UsedBy = []string{}
+		if r.Kind != "network" && r.Kind != "volume" {
+			continue
+		}
+		base := path.Base(r.Path)
+		for _, st := range out {
+			if st.uses(base, r.Name) {
+				r.UsedBy = append(r.UsedBy, st.ID)
+			}
+		}
+	}
+	sort.Slice(inv.Resources, func(i, j int) bool { return inv.Resources[i].Path < inv.Resources[j].Path })
+	return inv, nil
+}
+
+// uses reports whether a unit of the stack refers to a network or volume by file or Podman name
+func (s *Stack) uses(file, name string) bool {
+	for _, f := range s.Files {
+		for _, n := range f.Networks {
+			if n == file || n == name {
+				return true
+			}
+		}
+		for _, m := range f.Mounts {
+			if (m.Kind == "quadlet" || m.Kind == "volume") && (m.Source == file || m.Source == name) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func fileOrder(f *QFile) string {
@@ -246,11 +414,11 @@ func fileOrder(f *QFile) string {
 }
 
 func FindStack(root, id string) (*Stack, error) {
-	stacks, err := ScanStacks(root)
+	inv, err := Scan(root)
 	if err != nil {
 		return nil, err
 	}
-	for _, s := range stacks {
+	for _, s := range inv.Stacks {
 		if s.ID == id {
 			return s, nil
 		}

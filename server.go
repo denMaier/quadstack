@@ -146,17 +146,23 @@ type stackView struct {
 }
 
 func (s *Server) stacks(w http.ResponseWriter, r *http.Request) {
-	stacks, err := ScanStacks(s.cfg.QuadletDir)
+	inv, err := Scan(s.cfg.QuadletDir)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	stacks := inv.Stacks
 	var units []string
 	for _, st := range stacks {
 		for _, f := range st.Files {
 			if f.Unit != "" {
 				units = append(units, f.Unit)
 			}
+		}
+	}
+	for _, r := range inv.Resources {
+		if r.Unit != "" && r.Stack == "" {
+			units = append(units, r.Unit)
 		}
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
@@ -189,7 +195,11 @@ func (s *Server) stacks(w http.ResponseWriter, r *http.Request) {
 		v.State = stackState(st.Units(), v.Units)
 		views = append(views, v)
 	}
-	writeJSON(w, map[string]any{"stacks": views, "warnings": warnings})
+	resources := make([]map[string]any, 0, len(inv.Resources))
+	for _, r := range inv.Resources {
+		resources = append(resources, map[string]any{"file": r.QFile, "stack": r.Stack, "usedBy": r.UsedBy, "state": status[r.Unit]})
+	}
+	writeJSON(w, map[string]any{"stacks": views, "resources": resources, "warnings": warnings})
 }
 
 func stackState(units []string, status map[string]UnitState) string {
@@ -473,4 +483,140 @@ func (s *Server) convert(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"output": out})
+}
+
+// GET /api/podman-resources lists the networks and volumes Podman knows, Quadlet-defined or not
+func (s *Server) podmanResources(w http.ResponseWriter, r *http.Request) {
+	ns, err := Networks(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	vs, err := Volumes(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, map[string]any{"networks": ns, "volumes": vs})
+}
+
+type secretUse struct {
+	Stack  string `json:"stack"`
+	Path   string `json:"path"`
+	Type   string `json:"type"`
+	Target string `json:"target"`
+}
+
+// secretUses maps secret names to the Quadlet files that reference them
+func (s *Server) secretUses() (map[string][]secretUse, error) {
+	inv, err := Scan(s.cfg.QuadletDir)
+	if err != nil {
+		return nil, err
+	}
+	uses := map[string][]secretUse{}
+	for _, st := range inv.Stacks {
+		for _, f := range st.Files {
+			for _, ref := range f.Secrets {
+				uses[ref.Name] = append(uses[ref.Name], secretUse{st.ID, f.Path, ref.Type, ref.Target})
+			}
+		}
+	}
+	return uses, nil
+}
+
+func (s *Server) secrets(w http.ResponseWriter, r *http.Request) {
+	ss, err := Secrets(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	uses, err := s.secretUses()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	out := []map[string]any{}
+	seen := map[string]bool{}
+	for _, sec := range ss {
+		seen[sec.Spec.Name] = true
+		out = append(out, map[string]any{
+			"name": sec.Spec.Name, "driver": sec.Spec.Driver.Name, "created": sec.CreatedAt, "updated": sec.UpdatedAt,
+			"usedBy": nonNil(uses[sec.Spec.Name]), "exists": true,
+		})
+	}
+	// Referenced in a file but missing in Podman: the unit will fail to start
+	for name, u := range uses {
+		if !seen[name] {
+			out = append(out, map[string]any{"name": name, "usedBy": u, "exists": false})
+		}
+	}
+	writeJSON(w, out)
+}
+
+func nonNil[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
+}
+
+// POST /api/secrets {name, value | fromFile, replace}. fromFile reads a file the service
+// account can read, to turn a bind-mounted key file into a secret.
+func (s *Server) setSecret(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Name     string `json:"name"`
+		Value    string `json:"value"`
+		FromFile string `json:"fromFile"`
+		Replace  bool   `json:"replace"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	value := []byte(req.Value)
+	if req.FromFile != "" {
+		b, err := readSecretFile(req.FromFile)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		value = b
+	}
+	if err := SetSecret(r.Context(), req.Name, value, req.Replace); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
+func readSecretFile(p string) ([]byte, error) {
+	// Quadlet's %h is the service account's home
+	if rest, ok := strings.CutPrefix(p, "%h"); ok {
+		home, _ := os.UserHomeDir()
+		p = home + rest
+	}
+	if !path.IsAbs(p) {
+		return nil, errors.New("use an absolute path")
+	}
+	st, err := os.Stat(p)
+	if err != nil {
+		return nil, err
+	}
+	if !st.Mode().IsRegular() || st.Size() > maxSecretSize {
+		return nil, errors.New("not a regular file of at most 512 KiB")
+	}
+	return os.ReadFile(p)
+}
+
+func (s *Server) removeSecret(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if uses, err := s.secretUses(); err == nil && len(uses[name]) > 0 && r.URL.Query().Get("force") != "1" {
+		writeErr(w, http.StatusConflict, errors.New("this secret is still used by "+uses[name][0].Path))
+		return
+	}
+	if err := RemoveSecret(r.Context(), name); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true})
 }

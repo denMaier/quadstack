@@ -20,7 +20,7 @@ func writeTree(t *testing.T, files map[string]string) string {
 	return root
 }
 
-func TestScanStacks(t *testing.T) {
+func TestScan(t *testing.T) {
 	root := writeTree(t, map[string]string{
 		"arr.pod":                        "[Pod]\nPodName=arr\n",
 		"sonarr.container":               "[Container]\nImage=lscr.io/linuxserver/sonarr\nPod=arr.pod\n[Install]\nWantedBy=default.target\n",
@@ -36,10 +36,11 @@ func TestScanStacks(t *testing.T) {
 		".hidden.container":              "[Container]\n",
 	})
 
-	stacks, err := ScanStacks(root)
+	inv, err := Scan(root)
 	if err != nil {
 		t.Fatal(err)
 	}
+	stacks := inv.Stacks
 	got := map[string][]string{}
 	for _, s := range stacks {
 		for _, f := range s.Files {
@@ -52,7 +53,6 @@ func TestScanStacks(t *testing.T) {
 	want := map[string][]string{
 		"r/arr":    {"arr.pod", "radarr.container", "sonarr.container", "sonarr.container.d/10-env.conf"},
 		"r/kavita": {"kavita.container", "kavita.env"},
-		"r/media":  {"media.network"},
 		"d/web":    {"web/web.container", "web/web.volume"},
 		"d/empty":  nil,
 	}
@@ -144,5 +144,58 @@ quadlet-generator[1]: converting "zz.container": unsupported key 'BogusKey' in g
 	_, problems = quadletMessages(stderr, "stack/zz.container")
 	if len(problems) != 1 || problems[0] != `converting "zz.container": unsupported key 'BogusKey' in group 'Container' in /tmp/x/zz.container` {
 		t.Errorf("zz: %q", problems)
+	}
+}
+
+func TestResources(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"media.network":          "[Network]\nNetworkName=media\n",
+		"media.network.d/x.conf": "[Network]\nInternal=true\n",
+		"db.volume":              "[Volume]\n",
+		"orphan.network":         "[Network]\n",
+		"arr.pod":                "[Pod]\nNetwork=media.network\n",
+		"sonarr.container": "[Container]\nImage=x\nPod=arr.pod\nVolume=/DATA/media:/data:ro\nVolume=db.volume:/db\n" +
+			"Mount=type=bind,source=/srv,destination=/srv,ro\nSecret=api-key,type=env,target=API_KEY\nSecret=tls\n",
+		"kavita.container":  "[Container]\nImage=y\nNetwork=media:ip=10.89.0.5\n",
+		"web/web.network":   "[Network]\n",
+		"web/app.container": "[Container]\nImage=z\nNetwork=web.network\n",
+	})
+	inv, err := Scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range inv.Stacks {
+		if s.ID == "r/media" || s.ID == "r/db" || s.ID == "r/orphan" {
+			t.Errorf("shared resource %s should not be a stack", s.ID)
+		}
+	}
+	got := map[string][]string{}
+	for _, r := range inv.Resources {
+		got[r.Path+"@"+r.Stack] = r.UsedBy
+	}
+	want := map[string][]string{
+		"db.volume@":              {"r/arr"},
+		"media.network@":          {"r/arr", "r/kavita"},
+		"media.network.d/x.conf@": {},
+		"orphan.network@":         {},
+		"web/web.network@d/web":   {"d/web"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("resources\n got %v\nwant %v", got, want)
+	}
+
+	arr, _ := FindStack(root, "r/arr")
+	son := arr.Files[1]
+	wantMounts := []Mount{
+		{Kind: "bind", Source: "/DATA/media", Target: "/data", Options: "ro"},
+		{Kind: "quadlet", Source: "db.volume", Target: "/db"},
+		{Kind: "bind", Source: "/srv", Target: "/srv", Options: "ro"},
+	}
+	if !reflect.DeepEqual(son.Mounts, wantMounts) {
+		t.Errorf("mounts = %+v", son.Mounts)
+	}
+	wantSecrets := []SecretRef{{"api-key", "env", "API_KEY"}, {"tls", "mount", "/run/secrets/tls"}}
+	if !reflect.DeepEqual(son.Secrets, wantSecrets) {
+		t.Errorf("secrets = %+v", son.Secrets)
 	}
 }

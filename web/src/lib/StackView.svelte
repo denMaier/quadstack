@@ -4,6 +4,7 @@
   import FileEditor from './FileEditor.svelte'
   import NewFileDialog from './NewFileDialog.svelte'
   import Terminal from './Terminal.svelte'
+  import { catalog } from './catalog.svelte'
 
   let { stack, me, refresh }: { stack: Stack; me?: Me; refresh: () => Promise<void> } = $props()
 
@@ -15,6 +16,8 @@
   // What the terminal panel shows: the stack's logs, one unit's logs, an image pull or a shell
   let panel = $state<{ kind: 'logs' | 'pull' | 'exec'; title: string; url: string; interactive?: boolean }>()
 
+  const wiring = $derived(stack.files.filter((f) => f.networks?.length || f.mounts?.length || f.secrets?.length))
+  const isResource = (n: string) => catalog.resources.some((r) => r.file.path.split('/').pop() === n || r.file.name === n)
   const units = $derived(stack.files.filter((f) => f.unit && ['container', 'pod', 'kube'].includes(f.kind)).map((f) => f.unit!))
 
   // Reset the view when switching stacks
@@ -104,7 +107,7 @@
         {#key file}
           <FileEditor
             path={file}
-            {stack}
+            file={stack.files.find((f) => f.path === file)}
             onchanged={refresh}
             onmoved={async (to: string) => {
               await refresh()
@@ -158,6 +161,39 @@
           </tbody>
         </table>
       </div>
+
+      {#if wiring.length}
+        <details class="panel wiring" open>
+          <summary>Mounts, networks &amp; secrets</summary>
+          {#each wiring as f (f.path)}
+            <div class="unit-wiring">
+              <div class="mono small"><b>{f.path.split('/').pop()}</b></div>
+              {#each f.networks ?? [] as n}
+                <div class="w"><span class="tag">net</span>{#if isResource(n)}<a href="#/resources" class="mono">{n}</a>{:else}<span class="mono">{n}</span>{/if}</div>
+              {/each}
+              {#each f.mounts ?? [] as m}
+                <div class="w" title={m.options}>
+                  <span class="tag">{m.kind === 'bind' ? 'bind' : m.kind === 'quadlet' ? 'vol' : m.kind}</span>
+                  <span class="mono src">{#if m.kind === 'quadlet'}<a href="#/resources">{m.source}</a>{:else}{m.source ?? ''}{/if}</span>
+                  <span class="muted">→</span>
+                  <span class="mono">{m.target}</span>
+                  {#if m.options}<span class="muted opts">{m.options}</span>{/if}
+                </div>
+              {/each}
+              {#each f.secrets ?? [] as sec}
+                {@const known = catalog.secrets.find((x) => x.name === sec.name)}
+                <div class="w">
+                  <span class="tag secret">secret</span>
+                  <a href="#/secrets" class="mono">{sec.name}</a>
+                  <span class="muted">→</span>
+                  <span class="mono">{sec.type === 'env' ? '$' + sec.target : sec.target}</span>
+                  {#if known && !known.exists}<span class="missing">missing</span>{/if}
+                </div>
+              {/each}
+            </div>
+          {/each}
+        </details>
+      {/if}
 
       {#if panel}
         <div class="term-head row">
@@ -242,6 +278,54 @@
   }
   .actions button {
     padding: 3px 7px;
+  }
+  .wiring {
+    padding: 8px 12px;
+  }
+  .wiring summary {
+    cursor: pointer;
+    font-weight: 500;
+  }
+  .unit-wiring {
+    padding: 8px 0 4px;
+    border-top: 1px solid var(--border);
+    margin-top: 8px;
+  }
+  .unit-wiring:first-of-type {
+    border-top: 0;
+  }
+  .w {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    font-size: 12.5px;
+    min-width: 0;
+  }
+  .w .mono {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .src {
+    max-width: 50%;
+  }
+  .opts {
+    font-size: 11.5px;
+  }
+  .tag {
+    flex: none;
+    width: 44px;
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .tag.secret {
+    color: var(--warn);
+  }
+  .missing {
+    color: var(--bad);
+    font-size: 12px;
   }
   .term-head {
     margin-bottom: -4px;

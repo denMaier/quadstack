@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -15,11 +16,19 @@ import (
 // and needs no API socket.
 
 func podman(ctx context.Context, args ...string) ([]byte, error) {
+	return podmanIn(ctx, nil, args...)
+}
+
+// podmanIn runs podman with stdin, which is how secret values are passed: never as arguments
+func podmanIn(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	var stdout, stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, "podman", args...)
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(stderr.String())
 		if msg == "" {
@@ -82,6 +91,96 @@ func PruneImages(ctx context.Context, all bool) (string, error) {
 	}
 	out, err := podman(ctx, args...)
 	return string(out), err
+}
+
+type Network struct {
+	Name     string `json:"name"`
+	Driver   string `json:"driver"`
+	Internal bool   `json:"internal"`
+	DNS      bool   `json:"dns_enabled"`
+	Subnets  []struct {
+		Subnet  string `json:"subnet"`
+		Gateway string `json:"gateway"`
+	} `json:"subnets"`
+}
+
+type Volume struct {
+	Name       string `json:"Name"`
+	Driver     string `json:"Driver"`
+	Mountpoint string `json:"Mountpoint"`
+	CreatedAt  string `json:"CreatedAt"`
+}
+
+func Networks(ctx context.Context) ([]Network, error) {
+	out, err := podman(ctx, "network", "ls", "--format", "json")
+	if err != nil {
+		return nil, err
+	}
+	var ns []Network
+	return ns, json.Unmarshal(out, &ns)
+}
+
+func Volumes(ctx context.Context) ([]Volume, error) {
+	out, err := podman(ctx, "volume", "ls", "--format", "json")
+	if err != nil {
+		return nil, err
+	}
+	var vs []Volume
+	return vs, json.Unmarshal(out, &vs)
+}
+
+/* Secrets: values go in over stdin and never come back out */
+
+var secretNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,252}$`)
+
+const maxSecretSize = 512 * 1024 // Podman's limit
+
+type Secret struct {
+	ID        string `json:"ID"`
+	CreatedAt string `json:"CreatedAt"`
+	UpdatedAt string `json:"UpdatedAt"`
+	Spec      struct {
+		Name   string `json:"Name"`
+		Driver struct {
+			Name string `json:"Name"`
+		} `json:"Driver"`
+	} `json:"Spec"`
+}
+
+func Secrets(ctx context.Context) ([]Secret, error) {
+	out, err := podman(ctx, "secret", "ls", "--format", "json")
+	if err != nil {
+		return nil, err
+	}
+	ss := []Secret{}
+	if len(bytes.TrimSpace(out)) == 0 {
+		return ss, nil
+	}
+	return ss, json.Unmarshal(out, &ss)
+}
+
+// SetSecret creates a secret, or replaces its value when replace is set
+func SetSecret(ctx context.Context, name string, value []byte, replace bool) error {
+	if !secretNameRe.MatchString(name) {
+		return errors.New("secret names use letters, digits, dot, dash and underscore")
+	}
+	if len(value) == 0 || len(value) > maxSecretSize {
+		return errors.New("a secret value must be between 1 byte and 512 KiB")
+	}
+	args := []string{"secret", "create"}
+	if replace {
+		args = append(args, "--replace")
+	}
+	_, err := podmanIn(ctx, value, append(args, name, "-")...)
+	return err
+}
+
+func RemoveSecret(ctx context.Context, name string) error {
+	if !secretNameRe.MatchString(name) {
+		return errors.New("invalid secret name")
+	}
+	_, err := podman(ctx, "secret", "rm", name)
+	return err
 }
 
 // Convert turns a `docker run`/`podman run` command or a compose file into Quadlet files using podlet

@@ -1,16 +1,17 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { api, ApiError, type Apply, type Stack, type Validation, type Version } from './api'
+  import { api, ApiError, type Apply, type QFile, type Validation, type Version } from './api'
   import Editor from './Editor.svelte'
   import HistoryDialog from './HistoryDialog.svelte'
+  import SecretHelperDialog from './SecretHelperDialog.svelte'
 
   let {
     path,
-    stack,
+    file,
     onchanged,
     ondeleted,
     onmoved,
-  }: { path: string; stack: Stack; onchanged: () => Promise<void>; ondeleted: () => void; onmoved: (to: string) => void } = $props()
+  }: { path: string; file?: QFile; onchanged: () => Promise<void>; ondeleted: () => void; onmoved: (to: string) => void } = $props()
 
   let content = $state('')
   let saved = $state('')
@@ -21,9 +22,9 @@
   let validation = $state<Validation>()
   let showGenerated = $state(false)
   let historyOpen = $state(false)
+  let secretsOpen = $state(false)
 
   const dirty = $derived(content !== saved)
-  const file = $derived(stack.files.find((f) => f.path === path))
 
   onMount(async () => {
     try {
@@ -111,6 +112,9 @@
     <code class="grow path">{path}{dirty ? ' •' : ''}</code>
     <button disabled={busy || loading} onclick={validate}>Check</button>
     <button disabled={busy || loading} onclick={() => (historyOpen = true)}>History</button>
+    {#if file?.kind === 'container'}
+      <button disabled={busy || loading} onclick={() => (secretsOpen = true)} title="Move values into Podman secrets">Secrets</button>
+    {/if}
     <button class="ghost" disabled={busy} onclick={move} title="Move or rename">⇄</button>
     <button class="ghost danger" disabled={busy} onclick={remove} title="Delete">🗑</button>
   </div>
@@ -150,6 +154,19 @@
     <pre class="generated panel">{validation.generated}</pre>
   {/if}
 </div>
+
+{#if secretsOpen}
+  <SecretHelperDialog
+    {path}
+    {content}
+    onclose={() => (secretsOpen = false)}
+    onapply={(next: string, msg: string) => {
+      content = next
+      secretsOpen = false
+      notice = msg
+    }}
+  />
+{/if}
 
 {#if historyOpen}
   <HistoryDialog {path} current={content} onclose={() => (historyOpen = false)} onrestore={restore} />

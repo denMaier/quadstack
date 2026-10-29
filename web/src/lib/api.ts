@@ -7,9 +7,32 @@ export type QFile = {
   pod?: string
   image?: string
   containerName?: string
+  name?: string
   autostart: boolean
   parseError?: string
+  networks?: string[]
+  mounts?: Mount[]
+  secrets?: SecretRef[]
 }
+
+export type Mount = { kind: string; source?: string; target: string; options?: string }
+
+export type SecretRef = { name: string; type: string; target: string }
+
+export type Resource = { file: QFile; stack: string; usedBy: string[]; state: UnitState }
+
+export type SecretInfo = {
+  name: string
+  driver?: string
+  created?: string
+  updated?: string
+  exists: boolean
+  usedBy: { stack: string; path: string; type: string; target: string }[]
+}
+
+export type PodmanNetwork = { name: string; driver: string; internal: boolean; dns_enabled: boolean; subnets: { subnet: string; gateway: string }[] | null }
+
+export type PodmanVolume = { Name: string; Driver: string; Mountpoint: string; CreatedAt: string }
 
 export type Container = {
   Id: string
@@ -77,7 +100,7 @@ export type Apply = '' | 'reload' | 'restart'
 
 export const api = {
   me: () => call<Me>('GET', '/api/me'),
-  stacks: () => call<{ stacks: Stack[]; warnings: string[] | null }>('GET', '/api/stacks'),
+  stacks: () => call<{ stacks: Stack[]; resources: Resource[]; warnings: string[] | null }>('GET', '/api/stacks'),
   createStack: (name: string) => call<{ id: string }>('POST', '/api/stacks', { name }),
   removeStack: (id: string) => call('DELETE', '/api/stacks/' + id),
   stackAction: (stack: string, action: string) => call('POST', '/api/stack-action', { stack, action }),
@@ -94,6 +117,10 @@ export const api = {
   version: (path: string, id: string) => call<{ content: string }>('GET', '/api/history/version?' + q({ path, id })),
   images: () => call<Image[]>('GET', '/api/images'),
   prune: (all: boolean) => call<{ output: string }>('POST', '/api/images/prune', { all }),
+  podmanResources: () => call<{ networks: PodmanNetwork[] | null; volumes: PodmanVolume[] | null }>('GET', '/api/podman-resources'),
+  secrets: () => call<SecretInfo[]>('GET', '/api/secrets'),
+  setSecret: (s: { name: string; value?: string; fromFile?: string; replace?: boolean }) => call('POST', '/api/secrets', s),
+  removeSecret: (name: string, force = false) => call('DELETE', '/api/secrets?' + q({ name, force: force ? '1' : '0' })),
   convert: (input: string) => call<{ output: string }>('POST', '/api/convert', { input }),
 }
 

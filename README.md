@@ -17,6 +17,8 @@ Quadstack runs as a user service of the account that owns the Quadlets. It has n
 - **Logs.** A live `journalctl` view per stack or per unit.
 - **Update.** Pulls the images of a stack's containers in a live terminal and offers a restart afterwards.
 - **Shell.** Runs `podman exec` into a running container in the browser. You can turn it off with `QUADSTACK_TERMINAL=false`.
+- **Networks & volumes.** Top-level `.network` and `.volume` files are shared resources rather than stacks, listed with the stacks that use them, next to the Podman networks and volumes no file defines. Each stack shows its containers' bind mounts, volumes, networks and secrets.
+- **Secrets.** Podman secrets: create, replace and delete, with the files that use each one. Values go in over stdin and are never shown. In a container's editor, **Secrets** moves an `Environment=` value or a mounted key file into a secret and rewrites the line to `Secret=`.
 - **Images.** A list with sizes and usage, plus pruning of dangling or unused images.
 - **Import.** Paste a `docker run` command or a compose file and get Quadlet files. This needs [podlet](https://github.com/containers/podlet) on `PATH`.
 - **Sign-in with OpenID Connect only** (Pocket ID, Authentik, Keycloak, …). Access is limited to the listed users and/or groups. Quadstack refuses to start without such a list.
