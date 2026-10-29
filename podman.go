@@ -147,14 +147,22 @@ type Secret struct {
 	} `json:"Spec"`
 }
 
+// Secrets lists the secrets. `podman secret ls --format json` prints "json" in Podman 5.4 and ls
+// humanizes its dates, so the IDs come from ls and the details from inspect, which leaves
+// the value out unless --showsecret is given.
 func Secrets(ctx context.Context) ([]Secret, error) {
-	out, err := podman(ctx, "secret", "ls", "--format", "json")
+	out, err := podman(ctx, "secret", "ls", "--noheading", "--format", "{{.ID}}")
 	if err != nil {
 		return nil, err
 	}
+	ids := strings.Fields(string(out))
 	ss := []Secret{}
-	if len(bytes.TrimSpace(out)) == 0 {
+	if len(ids) == 0 {
 		return ss, nil
+	}
+	out, err = podman(ctx, append([]string{"secret", "inspect"}, ids...)...)
+	if err != nil {
+		return nil, err
 	}
 	return ss, json.Unmarshal(out, &ss)
 }
