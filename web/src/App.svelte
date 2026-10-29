@@ -137,7 +137,7 @@
           <div class="panel"><span class="dot"></span><b>{counts.stopped}</b> stopped</div>
         </div>
         {#if me}
-          <p class="muted">Managing <code>{me.quadletDir}</code> on <b>{me.host}</b>.
+          <p class="muted">Quadstack {me.version}, managing <code>{me.quadletDir}</code> on <b>{me.host}</b>.
             {#if !me.validation}<br />Podman's quadlet generator was not found, so files are saved without validation.{/if}</p>
         {/if}
         <p class="muted">

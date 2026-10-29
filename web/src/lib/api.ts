@@ -62,6 +62,7 @@ export type Me = {
   podlet: boolean
   terminal: boolean
   journal: string
+  version: string
 }
 
 export type Validation = { ok: boolean; skipped?: string; output: string; generated: string }

@@ -51,7 +51,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now quadstack
 ```
 
-For a system account without a login shell, run these with `sudo -iu <user>`. If `systemctl --user` can't find the bus, use `sudo machinectl shell <user>@`.
+Use `quadstack_linux_arm64` on ARM. For a system account without a login shell, run these with `sudo -iu <user>`. If `systemctl --user` can't find the bus, use `sudo machinectl shell <user>@`.
 
 ### Logs of system accounts
 
@@ -66,6 +66,17 @@ systemd-tmpfiles --create /etc/tmpfiles.d/quadstack-journal.conf
 ```
 
 This lets the account, and so anyone who can sign in to Quadstack, read the whole system journal. Adding the account to the `systemd-journal` group does the same, but only takes effect after its systemd user instance, and with it every container, restarts.
+
+### Update
+
+Replace the binary and restart; settings and history stay:
+
+```sh
+curl -L -o ~/.local/bin/quadstack \
+  https://github.com/denMaier/quadstack/releases/latest/download/quadstack_linux_amd64
+systemctl --user restart quadstack
+~/.local/bin/quadstack -version
+```
 
 ## Configuration
 
@@ -103,6 +114,8 @@ make test          # go vet, go test, svelte-check
 make build         # builds the web UI and the binary
 cd web && npm run dev   # Vite on :5173, proxying to a backend on :8090
 ```
+
+To release, push a tag `vX.Y.Z`. GitHub Actions runs the tests and publishes `quadstack_linux_amd64`, `quadstack_linux_arm64` and `SHA256SUMS`, with the tag built in as the version.
 
 The backend is Go: go-oidc, go-systemd (D-Bus), coder/websocket and creack/pty. The UI is Svelte 5 with CodeMirror 6 and xterm.js, embedded in the binary.
 

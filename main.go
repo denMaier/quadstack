@@ -4,6 +4,8 @@ package main
 
 import (
 	"embed"
+	"flag"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
@@ -13,7 +15,16 @@ import (
 //go:embed all:web/dist
 var webDist embed.FS
 
+// version is set at build time with -ldflags "-X main.version=…"
+var version = "dev"
+
 func main() {
+	showVersion := flag.Bool("version", false, "print the version and exit")
+	flag.Parse()
+	if *showVersion {
+		fmt.Println(version)
+		return
+	}
 	cfg, err := LoadConfig()
 	if err != nil {
 		log.Fatal(err)
@@ -29,7 +40,7 @@ func main() {
 	if cfg.QuadletBin == "" {
 		log.Print("quadlet generator not found: files are saved without validation")
 	}
-	log.Printf("quadstack listening on %s, managing %s", cfg.Listen, cfg.QuadletDir)
+	log.Printf("quadstack %s listening on %s, managing %s", version, cfg.Listen, cfg.QuadletDir)
 	srv := &http.Server{
 		Addr:              cfg.Listen,
 		Handler:           s.Routes(),

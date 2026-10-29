@@ -139,6 +139,7 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	sess, _ := s.auth.Session(r)
 	host, _ := os.Hostname()
 	writeJSON(w, map[string]any{
+		"version":    version,
 		"name":       sess.Name,
 		"host":       host,
 		"quadletDir": s.cfg.QuadletDir,
