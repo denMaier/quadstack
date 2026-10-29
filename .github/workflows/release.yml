@@ -20,6 +20,7 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - run: make web
       - run: make test
       - run: make release VERSION="$GITHUB_REF_NAME"
       - name: Publish
