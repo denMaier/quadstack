@@ -46,6 +46,10 @@ func (s *Server) Routes() http.Handler {
 		"GET /api/images":            s.images,
 		"POST /api/images/prune":     s.pruneImages,
 		"POST /api/convert":          s.convert,
+		"GET /api/podman-resources":  s.podmanResources,
+		"GET /api/secrets":           s.secrets,
+		"POST /api/secrets":          s.setSecret,
+		"DELETE /api/secrets":        s.removeSecret,
 		"GET /ws/logs":               s.wsLogs,
 		"GET /ws/pull":               s.wsPull,
 		"GET /ws/exec":               s.wsExec,
@@ -56,6 +60,11 @@ func (s *Server) Routes() http.Handler {
 
 	files := http.FileServerFS(s.static)
 	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		// Unknown API paths must not fall through to the single page app's index.html
+		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/ws/") {
+			writeErr(w, http.StatusNotFound, errors.New("no such endpoint: "+r.URL.Path))
+			return
+		}
 		if _, ok := s.auth.Session(r); !ok {
 			http.Redirect(w, r, "/auth/login?next="+r.URL.EscapedPath(), http.StatusFound)
 			return

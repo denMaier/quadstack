@@ -90,8 +90,9 @@ async function call<T>(method: string, url: string, body?: unknown): Promise<T> 
     location.href = '/auth/login?next=' + encodeURIComponent(location.pathname + location.hash)
     throw new ApiError('Signed out', 401, null)
   }
-  const data = await res.json().catch(() => null)
+  const data = await res.json().catch(() => undefined)
   if (!res.ok) throw new ApiError(data?.error ?? res.statusText, res.status, data)
+  if (data === undefined) throw new ApiError(`Unexpected response from ${method} ${url}`, res.status, null)
   return data as T
 }
 

@@ -49,7 +49,7 @@
 </script>
 
 <section>
-  <h1>Networks &amp; volumes</h1>
+  <h1>Networks &amp; Volumes</h1>
   <p class="muted">
     Network and volume files at the top of the Quadlet directory are shared: any stack can use them with
     <code>Network=name.network</code> or <code>Volume=name.volume:/path</code>, and systemd creates them when a unit

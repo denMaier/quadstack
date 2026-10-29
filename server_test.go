@@ -58,6 +58,17 @@ func TestAPI(t *testing.T) {
 		t.Fatalf("spa fallback: %d %q", w.Code, w.Body.String())
 	}
 
+	// Every endpoint the UI calls answers with JSON, never the app's index.html
+	for _, u := range []string{"/api/me", "/api/stacks", "/api/podman-resources", "/api/secrets", "/api/images", "/api/nope"} {
+		w := do(t, h, c, "GET", u, "", false)
+		if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+			t.Errorf("%s: %d %s", u, w.Code, ct)
+		}
+	}
+	if w := do(t, h, c, "GET", "/api/nope", "", false); w.Code != 404 {
+		t.Errorf("unknown endpoint: %d", w.Code)
+	}
+
 	file := `{"path":"web/web.container","content":"[Container]\nImage=nginx\n"}`
 	if w := do(t, h, c, "POST", "/api/file", file, false); w.Code != 403 {
 		t.Fatalf("missing CSRF header: %d", w.Code)

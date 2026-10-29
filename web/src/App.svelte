@@ -82,7 +82,7 @@
     {#if me}<span class="muted host">{me.host}</span>{/if}
     <span class="grow"></span>
     <nav class="top">
-      <a href="#/resources" class:active={route === '/resources'}>Networks &amp; volumes</a>
+      <a href="#/resources" class:active={route === '/resources'}>Networks &amp; Volumes</a>
       <a href="#/secrets" class:active={route === '/secrets'}>Secrets</a>
       <a href="#/images" class:active={route === '/images'}>Images</a>
     </nav>
@@ -143,7 +143,7 @@
         <p class="muted">
           A stack is a folder in the Quadlet directory, or a top-level <code>.pod</code> together with the containers
           that set <code>Pod=</code> to it. Every other top-level unit is a stack of its own. Top-level networks and
-          volumes are shared; see <a href="#/resources">Networks &amp; volumes</a>.
+          volumes are shared; see <a href="#/resources">Networks &amp; Volumes</a>.
         </p>
       </section>
     {/if}
