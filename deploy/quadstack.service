@@ -1,0 +1,17 @@
+# Install as a user unit of the account that owns the Quadlets:
+#   ~/.config/systemd/user/quadstack.service
+# then: systemctl --user daemon-reload && systemctl --user enable --now quadstack
+# The account needs lingering (loginctl enable-linger <user>) to run without a login.
+# No sandboxing options: rootless Podman needs the setuid newuidmap/newgidmap helpers.
+[Unit]
+Description=Quadstack, a web UI for rootless Quadlets
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/quadstack
+EnvironmentFile=%h/.config/quadstack/quadstack.env
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
