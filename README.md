@@ -101,15 +101,63 @@ Every setting is an environment variable. See [`deploy/quadstack.env.example`](d
 
 ## AI access (MCP)
 
-Quadstack has an MCP endpoint at `/mcp` for AI assistants such as Claude Code. It refuses every request until you create a **grant** under **AI access**. A grant has:
+Quadstack has an [MCP](https://modelcontextprotocol.io) endpoint at `<QUADSTACK_PUBLIC_URL>/mcp` for AI assistants such as Claude Code. It refuses every request until you create a **grant** under **AI access**. A grant has:
 
-- **An end.** It lasts from 15 minutes up to `QUADSTACK_MCP_MAX_HOURS`, and **End now** stops it at once.
-- **Its own bearer token.** The token is shown once, with a ready `claude mcp add` command. Quadstack stores only its SHA-256 hash.
-- **Rules.** A matrix of permissions by stack. **All stacks** also covers stacks created later and the shared networks and volumes. The per-stack permissions are: See, Read, Env (`.env` files, which often hold credentials), History, Write, Delete, Logs, Start, Stop, Restart, Pull and Exec. Account-wide ones cover networks and volumes, images (list, prune) and secrets (list, set, delete).
+- **An end.** It lasts from 15 minutes up to `QUADSTACK_MCP_MAX_HOURS` (24 by default), and **End now** stops it at once. An edit can move the end, but never past that maximum from now.
+- **Its own bearer token.** The token is shown once. Quadstack stores only its SHA-256 hash, so a lost token means a new grant.
+- **Rules.** A table of permissions by stack, plus some account-wide permissions. You can start from a preset (Nothing, Read only, Read & operate, Everything) and then change single boxes. Clicking a column or row name switches the whole line.
 
-Tools the grant does not allow are not offered at all. The server is rebuilt for each request, so edits and revocations reach a running session immediately. Each call is checked again against the current rules. The rules also cover a file's stack after a change: a top-level container that sets `Pod=` joins the pod's stack, so that edit needs Write on both stacks. Writes are validated by `quadlet` and refused when they fail, with no override. Secret values can be set but never read.
+### Connecting a client
 
-Every call, including denied ones, goes to `~/.local/state/quadstack/mcp-audit.jsonl` and the **AI access** page. The log keeps the arguments, but replaces file contents with their size and hash and leaves secret values out.
+After **Create grant**, the page shows the token with a ready command for Claude Code:
+
+```sh
+claude mcp add --transport http quadstack https://quadstack.example.com/mcp \
+  --header "Authorization: Bearer qsm_…"
+```
+
+It also shows the same settings as JSON (`type: http`, `url`, and an `Authorization` header) for other clients. The transport is streamable HTTP without sessions. If a reverse proxy is in front, it must pass the `Authorization` header through to `/mcp`. Once the grant ends, the client gets `401` until you give it a new token.
+
+### Permissions
+
+**Scopes.** A per-stack permission applies to the stacks you tick. Stacks are named `d/<folder>` for folders and `r/<name>` for top-level units. Two scopes are special:
+
+- **All stacks** (`*`) covers every stack, including stacks created later, and the shared networks and volumes.
+- **Shared networks & volumes** (`shared`) covers the top-level `.network` and `.volume` files and their drop-ins.
+
+A new file in a new folder belongs to a stack that does not exist yet, so creating it needs Write on **All stacks**.
+
+| Permission | Column | Tools | Allows |
+|---|---|---|---|
+| `stacks.read` | See | `list_stacks` | Stacks with their files, unit state and containers; with `shared`, also the shared files |
+| `files.read` | Read | `read_file` | Quadlet and drop-in files |
+| `env.read` | Env | with `read_file`, `file_history` | `.env` files, which often hold credentials. Needs Read or History as well |
+| `history.read` | History | `file_history` | The saved versions of a file |
+| `files.write` | Write | `write_file`, `validate_file`, `daemon_reload` | Creating and replacing files. A file Podman's `quadlet` rejects is not saved, and MCP has no override |
+| `files.delete` | Delete | `delete_file` | Deleting files. The previous version stays in the history |
+| `logs.read` | Logs | `read_logs` | Journal lines of a unit or a whole stack, up to 2000 |
+| `units.start`, `units.stop`, `units.restart` | Start, Stop, Restart | `unit_action`, `stack_action` | Each action separately. Restart is also needed for `write_file` with `apply: restart`, and Stop for `delete_file` with `stop` |
+| `images.pull` | Pull | `pull_images` | Pulling newer images of the stack's containers |
+| `exec` | Exec | `exec` | Running a command in the stack's containers, with no terminal and a timeout of up to 10 minutes. Only offered while `QUADSTACK_TERMINAL=true` |
+| `resources.read` | account | `list_resources` | Podman networks and volumes, and the Quadlet network and volume files |
+| `images.read` | account | `list_images` | Local images |
+| `images.prune` | account | `prune_images` | Removing dangling or unused images |
+| `secrets.read` | account | `list_secrets` | Secret names and where they are used. Values are never returned |
+| `secrets.write` | account | `set_secret` | Creating secrets and replacing their values |
+| `secrets.delete` | account | `remove_secret` | Deleting secrets |
+
+`access_info` is always offered. It tells the assistant what its grant allows and when it ends.
+
+### How the rules are enforced
+
+- **Hidden tools.** Tools that the grant does not allow are not listed, and calling one fails.
+- **Live rules.** The MCP server is rebuilt for every request from the grant as it is now. Each call checks the grant again before it runs, so an edit, an end or a revocation applies to a session that is already running.
+- **A file's stack before and after a change.** A change must be allowed for the stack the file is in and for the stack it ends up in. A top-level container that sets `Pod=` joins that pod's stack, so this edit needs Write on both stacks.
+- **Units and containers.** Units and containers are matched to the stack whose file defines them. A container that no Quadlet file started needs Exec on **All stacks**.
+
+### Audit log
+
+Every call goes to `~/.local/state/quadstack/mcp-audit.jsonl` and to the **AI access** page, with the grant, the tool, the arguments and the result. The result is `ok`, `denied` or `error`. File contents are replaced by their size and a hash, and secret values are left out. The log rotates to `mcp-audit.jsonl.1` at 5 MB. Grants are kept in `mcp-grants.json` in the same directory, and ended grants are removed a week after they end.
 
 ## Security notes
 
