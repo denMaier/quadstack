@@ -18,6 +18,7 @@ func testServer(t *testing.T) (*Server, *http.Cookie) {
 		QuadletDir:    t.TempDir(),
 		StateDir:      t.TempDir(),
 		SessionSecret: "test-secret",
+		MCPMaxTTL:     time.Hour,
 	}
 	s := &Server{
 		cfg:     cfg,
@@ -25,6 +26,8 @@ func testServer(t *testing.T) (*Server, *http.Cookie) {
 		files:   &Files{cfg: cfg},
 		systemd: &Systemd{},
 		static:  fstest.MapFS{"index.html": {Data: []byte("app")}},
+		grants:  newGrants(cfg),
+		audit:   newAudit(cfg),
 	}
 	tok, _ := sign(cfg.SessionSecret, sessionData{Sub: "u", Name: "U", Expires: time.Now().Add(time.Hour).Unix()})
 	return s, &http.Cookie{Name: sessionCookie, Value: tok}
@@ -100,6 +103,15 @@ func TestAPI(t *testing.T) {
 	if len(res.Stacks) != 1 || res.Stacks[0].ID != "d/web" || res.Stacks[0].Files[0].Image != "nginx:2" {
 		t.Fatalf("stacks: %s", w.Body)
 	}
+
+	// A new, empty stack folder must list with files: [], which the sidebar iterates
+	if w := do(t, h, c, "POST", "/api/stacks", `{"name":"fresh"}`, true); w.Code != 200 {
+		t.Fatalf("create stack: %d %s", w.Code, w.Body)
+	}
+	if w := do(t, h, c, "GET", "/api/stacks", "", false); !strings.Contains(w.Body.String(), `"id":"d/fresh","name":"fresh","dir":"fresh","files":[]`) {
+		t.Fatalf("empty stack: %s", w.Body)
+	}
+	os.Remove(s.files.abs("fresh"))
 
 	w = do(t, h, c, "GET", "/api/history?path=web/web.container", "", false)
 	var vs []Version

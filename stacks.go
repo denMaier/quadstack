@@ -253,7 +253,8 @@ func Scan(root string) (*Inventory, error) {
 		if s, ok := byID[id]; ok {
 			return s
 		}
-		s := &Stack{ID: id, Name: name, Dir: dir}
+		// Files is never nil: an empty stack folder must serialize as [], not null
+		s := &Stack{ID: id, Name: name, Dir: dir, Files: []*QFile{}}
 		byID[id] = s
 		return s
 	}
