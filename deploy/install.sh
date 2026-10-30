@@ -10,6 +10,7 @@
 #   QS_USER QS_PUBLIC_URL QS_ISSUER QS_CLIENT_ID QS_CLIENT_SECRET QS_ALLOWED_GROUPS
 #   QS_ALLOWED_USERS QS_LISTEN QS_TERMINAL QS_MCP_MAX_HOURS QS_JOURNAL_ACL
 #   QS_MODE=install|update|reconfigure  QS_VERSION=v0.2.0 (default: latest)  QS_YES=1
+#   QS_PODLET=1 installs podlet (for Import) without asking; unattended runs skip it otherwise
 set -Eeuo pipefail
 
 REPO=denMaier/quadstack
@@ -181,6 +182,54 @@ install_binary() {
   msg_ok "Installed $("$home/.local/bin/quadstack" -version) to $home/.local/bin/quadstack"
 }
 
+# podlet turns docker run commands and compose files into Quadlets (Import). It is optional:
+# asked for, no by default, and kept up to date once this installer put it in /usr/local/bin.
+# It never fails the install.
+PODLET=/usr/local/bin/podlet
+install_podlet() {
+  local arch tag cur tmp url
+  if [[ ! -x $PODLET ]]; then
+    if command -v podlet >/dev/null 2>&1; then
+      return 0 # installed some other way; leave it alone
+    fi
+    case ${QS_PODLET:-} in
+    1 | yes) ;;
+    0 | no) return 0 ;;
+    *) confirm "Install podlet? It lets Quadstack import docker run commands and compose files (Import). Optional; you can run this installer again later." no || return 0 ;;
+    esac
+  fi
+  case $(uname -m) in
+  x86_64) arch=x86_64 ;;
+  aarch64 | arm64) arch=aarch64 ;;
+  *) msg_warn "No podlet build for $(uname -m); Import stays off" && return 0 ;;
+  esac
+  url=$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/containers/podlet/releases/latest) || return 1
+  tag=${url##*/}
+  [[ $tag == v* ]] || return 1
+  cur=$("$PODLET" --version 2>/dev/null | awk '{print $2}' || true)
+  if [[ v$cur == "$tag" ]]; then
+    msg_ok "podlet $tag is up to date"
+    return 0
+  fi
+  if ! command -v xz >/dev/null 2>&1; then
+    command -v apt-get >/dev/null 2>&1 || return 1
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq xz-utils >/dev/null || return 1
+  fi
+  msg_info "Downloading podlet $tag ($arch)"
+  tmp=$(mktemp -d) || return 1
+  local f=podlet-$arch-unknown-linux-gnu.tar.xz
+  url=https://github.com/containers/podlet/releases/download/$tag/$f
+  if curl -fsSL -o "$tmp/$f" "$url" && curl -fsSL -o "$tmp/$f.sha256" "$url.sha256" &&
+    (cd "$tmp" && grep . "$f.sha256" | sha256sum -c --quiet -) &&
+    tar -xJf "$tmp/$f" -C "$tmp" && install -m 0755 "$tmp/${f%.tar.xz}/podlet" "$PODLET"; then
+    rm -rf "$tmp"
+    msg_ok "Installed podlet $tag to $PODLET"
+  else
+    rm -rf "$tmp"
+    return 1
+  fi
+}
+
 wait_active() {
   local u=$1 i
   for i in $(seq 1 20); do
@@ -209,6 +258,7 @@ if [[ -n $EXISTING ]]; then
   if [[ $QS_MODE == update ]]; then
     TAG=$(resolve_version)
     install_binary "$EXISTING" "$TAG"
+    install_podlet || msg_warn "podlet could not be installed; Import stays off"
     msg_info "Restarting Quadstack"
     as_user "$EXISTING" systemctl --user restart quadstack.service
     wait_active "$EXISTING"
@@ -371,6 +421,7 @@ fi
 
 TAG=$(resolve_version)
 install_binary "$QS_USER" "$TAG"
+install_podlet || msg_warn "podlet could not be installed; Import stays off"
 
 UNIT=$HOMEDIR/.config/systemd/user/quadstack.service
 userdir "$QS_USER" 0755 "$HOMEDIR/.config/systemd/user"

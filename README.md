@@ -20,7 +20,7 @@ Quadstack runs as a user service of the account that owns the Quadlets. It has n
 - **Networks & volumes.** Top-level `.network` and `.volume` files are shared resources rather than stacks, listed with the stacks that use them, next to the Podman networks and volumes no file defines. Each stack shows its containers' bind mounts, volumes, networks and secrets.
 - **Secrets.** Podman secrets: create, replace and delete, with the files that use each one. Values go in over stdin and are never shown. In a container's editor, **Secrets** moves an `Environment=` value or a mounted key file into a secret and rewrites the line to `Secret=`.
 - **Images.** A list with sizes and usage, plus pruning of dangling or unused images.
-- **Import.** Paste a `docker run` command or a compose file and get Quadlet files. This needs [podlet](https://github.com/containers/podlet) on `PATH`.
+- **Import.** Paste a `docker run` command or a compose file and get Quadlet files. This needs [podlet](https://github.com/containers/podlet) on `PATH`. The installer offers to install it to `/usr/local/bin` and keeps it up to date on updates. Unattended runs skip it unless `QS_PODLET=1` is set.
 - **AI access over MCP, off by default.** See [AI access](#ai-access-mcp).
 - **Sign-in with OpenID Connect only** (Pocket ID, Authentik, Keycloak, …). Access is limited to the listed users and/or groups. Quadstack refuses to start without such a list.
 
