@@ -5,6 +5,7 @@
   import ImagesView from './lib/ImagesView.svelte'
   import ResourcesView from './lib/ResourcesView.svelte'
   import SecretsView from './lib/SecretsView.svelte'
+  import McpView from './lib/McpView.svelte'
   import { catalog, loadSecrets } from './lib/catalog.svelte'
   import ImportDialog from './lib/ImportDialog.svelte'
 
@@ -85,6 +86,7 @@
       <a href="#/resources" class:active={route === '/resources'}>Networks &amp; Volumes</a>
       <a href="#/secrets" class:active={route === '/secrets'}>Secrets</a>
       <a href="#/images" class:active={route === '/images'}>Images</a>
+      <a href="#/mcp" class:active={route === '/mcp'}>AI access</a>
     </nav>
     {#if me}<span class="muted">{me.name}</span>{/if}
     <a href="/auth/logout">Sign out</a>
@@ -121,6 +123,8 @@
       <ResourcesView {stacks} {refresh} />
     {:else if route === '/secrets'}
       <SecretsView />
+    {:else if route === '/mcp'}
+      <McpView {stacks} />
     {:else if stackID}
       {#if current}
         <StackView stack={current} {me} {refresh} />

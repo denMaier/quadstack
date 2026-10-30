@@ -40,18 +40,13 @@ type Validation struct {
 	Generated string `json:"generated"`         // the systemd unit generated for this file
 }
 
-// Validate runs `quadlet -dryrun -user` on a scratch copy of the Quadlet directory in which
-// rel holds content (or is gone when content is nil), so references between files resolve.
-func (fl *Files) Validate(ctx context.Context, rel string, content *string) Validation {
-	if fl.cfg.QuadletBin == "" {
-		return Validation{OK: true, Skipped: "Podman's quadlet generator was not found; set QUADSTACK_QUADLET_BIN."}
-	}
-	tmp, err := os.MkdirTemp(fl.cfg.StateDir, "validate-")
+// scratchCopy copies the managed files to a temporary directory in which rel holds content
+// (or is gone when content is nil). The caller removes the directory.
+func (fl *Files) scratchCopy(rel string, content *string) (string, error) {
+	tmp, err := os.MkdirTemp(fl.cfg.StateDir, "scratch-")
 	if err != nil {
-		return Validation{Output: err.Error()}
+		return "", err
 	}
-	defer os.RemoveAll(tmp)
-
 	err = filepath.WalkDir(fl.cfg.QuadletDir, func(abs string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -69,18 +64,44 @@ func (fl *Files) Validate(ctx context.Context, rel string, content *string) Vali
 		}
 		return os.WriteFile(filepath.Join(tmp, r), b, 0o600)
 	})
+	target := filepath.Join(tmp, filepath.FromSlash(rel))
+	switch {
+	case err != nil:
+	case content == nil:
+		os.Remove(target)
+	default:
+		os.MkdirAll(filepath.Dir(target), 0o700)
+		err = os.WriteFile(target, []byte(*content), 0o600)
+	}
+	if err != nil {
+		os.RemoveAll(tmp)
+		return "", err
+	}
+	return tmp, nil
+}
+
+// ScanWith is Scan as it would be after rel is written with content (or deleted when content is nil)
+func (fl *Files) ScanWith(rel string, content *string) (*Inventory, error) {
+	tmp, err := fl.scratchCopy(rel, content)
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmp)
+	return Scan(tmp)
+}
+
+// Validate runs `quadlet -dryrun -user` on a scratch copy of the Quadlet directory in which
+// rel holds content (or is gone when content is nil), so references between files resolve.
+func (fl *Files) Validate(ctx context.Context, rel string, content *string) Validation {
+	if fl.cfg.QuadletBin == "" {
+		return Validation{OK: true, Skipped: "Podman's quadlet generator was not found; set QUADSTACK_QUADLET_BIN."}
+	}
+	tmp, err := fl.scratchCopy(rel, content)
 	if err != nil {
 		return Validation{Output: err.Error()}
 	}
+	defer os.RemoveAll(tmp)
 	target := filepath.Join(tmp, filepath.FromSlash(rel))
-	if content == nil {
-		os.Remove(target)
-	} else {
-		os.MkdirAll(filepath.Dir(target), 0o700)
-		if err := os.WriteFile(target, []byte(*content), 0o600); err != nil {
-			return Validation{Output: err.Error()}
-		}
-	}
 
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()

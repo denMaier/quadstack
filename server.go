@@ -11,6 +11,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type Server struct {
@@ -19,6 +21,8 @@ type Server struct {
 	files   *Files
 	systemd *Systemd
 	static  fs.FS
+	grants  *Grants
+	audit   *Audit
 }
 
 func (s *Server) Routes() http.Handler {
@@ -28,34 +32,50 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /auth/logout", s.auth.HandleLogout)
 
 	api := map[string]http.HandlerFunc{
-		"GET /api/me":                s.me,
-		"GET /api/stacks":            s.stacks,
-		"POST /api/stacks":           s.createStack,
-		"DELETE /api/stacks/{id...}": s.removeStack,
-		"POST /api/stack-action":     s.stackAction,
-		"POST /api/unit-action":      s.unitAction,
-		"POST /api/reload":           s.reload,
-		"GET /api/file":              s.readFile,
-		"PUT /api/file":              s.writeFile,
-		"POST /api/file":             s.createFile,
-		"DELETE /api/file":           s.deleteFile,
-		"POST /api/file/move":        s.moveFile,
-		"POST /api/validate":         s.validate,
-		"GET /api/history":           s.history,
-		"GET /api/history/version":   s.historyVersion,
-		"GET /api/images":            s.images,
-		"POST /api/images/prune":     s.pruneImages,
-		"POST /api/convert":          s.convert,
-		"GET /api/podman-resources":  s.podmanResources,
-		"GET /api/secrets":           s.secrets,
-		"POST /api/secrets":          s.setSecret,
-		"DELETE /api/secrets":        s.removeSecret,
-		"GET /ws/logs":               s.wsLogs,
-		"GET /ws/pull":               s.wsPull,
-		"GET /ws/exec":               s.wsExec,
+		"GET /api/me":                 s.me,
+		"GET /api/stacks":             s.stacks,
+		"POST /api/stacks":            s.createStack,
+		"DELETE /api/stacks/{id...}":  s.removeStack,
+		"POST /api/stack-action":      s.stackAction,
+		"POST /api/unit-action":       s.unitAction,
+		"POST /api/reload":            s.reload,
+		"GET /api/file":               s.readFile,
+		"PUT /api/file":               s.writeFile,
+		"POST /api/file":              s.createFile,
+		"DELETE /api/file":            s.deleteFile,
+		"POST /api/file/move":         s.moveFile,
+		"POST /api/validate":          s.validate,
+		"GET /api/history":            s.history,
+		"GET /api/history/version":    s.historyVersion,
+		"GET /api/images":             s.images,
+		"POST /api/images/prune":      s.pruneImages,
+		"POST /api/convert":           s.convert,
+		"GET /api/podman-resources":   s.podmanResources,
+		"GET /api/secrets":            s.secrets,
+		"POST /api/secrets":           s.setSecret,
+		"DELETE /api/secrets":         s.removeSecret,
+		"GET /api/mcp":                s.mcpInfo,
+		"POST /api/mcp/grants":        s.createGrant,
+		"PUT /api/mcp/grants/{id}":    s.updateGrant,
+		"DELETE /api/mcp/grants/{id}": s.revokeGrant,
+		"GET /ws/logs":                s.wsLogs,
+		"GET /ws/pull":                s.wsPull,
+		"GET /ws/exec":                s.wsExec,
 	}
 	for pattern, h := range api {
 		mux.Handle(pattern, s.requireSession(h))
+	}
+
+	// MCP clients authenticate with a grant's bearer token instead of the session cookie
+	mcpHandler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
+		g, ok := grantFrom(r.Context())
+		if !ok {
+			return nil
+		}
+		return s.mcpServer(g)
+	}, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+	for _, m := range []string{"GET", "POST", "DELETE"} {
+		mux.Handle(m+" /mcp", s.mcpEndpoint(mcpHandler))
 	}
 
 	files := http.FileServerFS(s.static)
@@ -172,14 +192,33 @@ type stackView struct {
 }
 
 func (s *Server) stacks(w http.ResponseWriter, r *http.Request) {
-	inv, err := Scan(s.cfg.QuadletDir)
+	o, err := s.overview(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	stacks := inv.Stacks
+	resources := make([]map[string]any, 0, len(o.inv.Resources))
+	for _, r := range o.inv.Resources {
+		resources = append(resources, map[string]any{"file": r.QFile, "stack": r.Stack, "usedBy": r.UsedBy, "state": o.status[r.Unit]})
+	}
+	writeJSON(w, map[string]any{"stacks": o.views, "resources": resources, "warnings": o.warnings})
+}
+
+type overview struct {
+	inv      *Inventory
+	views    []stackView
+	status   map[string]UnitState
+	warnings []string
+}
+
+// overview scans the Quadlet directory and adds unit and container status
+func (s *Server) overview(ctx context.Context) (*overview, error) {
+	inv, err := Scan(s.cfg.QuadletDir)
+	if err != nil {
+		return nil, err
+	}
 	var units []string
-	for _, st := range stacks {
+	for _, st := range inv.Stacks {
 		for _, f := range st.Files {
 			if f.Unit != "" {
 				units = append(units, f.Unit)
@@ -191,41 +230,37 @@ func (s *Server) stacks(w http.ResponseWriter, r *http.Request) {
 			units = append(units, r.Unit)
 		}
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
 	// Missing systemd or Podman (e.g. while developing) degrades the view instead of failing it
-	var warnings []string
-	status, err := s.systemd.Status(ctx, units)
+	o := &overview{inv: inv}
+	o.status, err = s.systemd.Status(ctx, units)
 	if err != nil {
-		warnings = append(warnings, err.Error())
+		o.warnings = append(o.warnings, err.Error())
 	}
 	containers, err := Containers(ctx)
 	if err != nil {
-		warnings = append(warnings, err.Error())
+		o.warnings = append(o.warnings, err.Error())
 	}
 	byUnit := map[string][]Container{}
 	for _, c := range containers {
 		byUnit[c.Unit()] = append(byUnit[c.Unit()], c)
 	}
 
-	views := make([]stackView, 0, len(stacks))
-	for _, st := range stacks {
+	o.views = make([]stackView, 0, len(inv.Stacks))
+	for _, st := range inv.Stacks {
 		v := stackView{Stack: st, Units: map[string]UnitState{}, Containers: []Container{}}
 		for _, f := range st.Files {
 			if f.Unit != "" {
-				v.Units[f.Unit] = status[f.Unit]
+				v.Units[f.Unit] = o.status[f.Unit]
 				v.Containers = append(v.Containers, byUnit[f.Unit]...)
 			}
 		}
 		v.State = stackState(st.Units(), v.Units)
-		views = append(views, v)
+		o.views = append(o.views, v)
 	}
-	resources := make([]map[string]any, 0, len(inv.Resources))
-	for _, r := range inv.Resources {
-		resources = append(resources, map[string]any{"file": r.QFile, "stack": r.Stack, "usedBy": r.UsedBy, "state": status[r.Unit]})
-	}
-	writeJSON(w, map[string]any{"stacks": views, "resources": resources, "warnings": warnings})
+	return o, nil
 }
 
 func stackState(units []string, status map[string]UnitState) string {
@@ -551,15 +586,23 @@ func (s *Server) secretUses() (map[string][]secretUse, error) {
 }
 
 func (s *Server) secrets(w http.ResponseWriter, r *http.Request) {
-	ss, err := Secrets(r.Context())
+	out, err := s.secretList(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
+	writeJSON(w, out)
+}
+
+// secretList combines Podman's secrets with the files that reference them
+func (s *Server) secretList(ctx context.Context) ([]map[string]any, error) {
+	ss, err := Secrets(ctx)
+	if err != nil {
+		return nil, err
+	}
 	uses, err := s.secretUses()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
-		return
+		return nil, err
 	}
 	out := []map[string]any{}
 	seen := map[string]bool{}
@@ -576,7 +619,7 @@ func (s *Server) secrets(w http.ResponseWriter, r *http.Request) {
 			out = append(out, map[string]any{"name": name, "usedBy": u, "exists": false})
 		}
 	}
-	writeJSON(w, out)
+	return out, nil
 }
 
 func nonNil[T any](s []T) []T {

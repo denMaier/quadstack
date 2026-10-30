@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Config is read once at startup from QUADSTACK_* environment variables,
@@ -31,7 +33,10 @@ type Config struct {
 	StateDir   string // edit history and the session secret
 	QuadletBin string // Podman's quadlet generator, used for validation
 	PodletBin  string // optional, enables importing docker run / compose
-	Terminal   bool   // allow `podman exec` shells from the browser
+	Terminal   bool   // allow `podman exec` shells from the browser, and the MCP exec tool
+
+	// The longest an MCP grant may last; 0 turns MCP access off entirely
+	MCPMaxTTL time.Duration
 
 	SessionSecret string
 }
@@ -94,6 +99,11 @@ func LoadConfig() (*Config, error) {
 		PodletBin:     env("QUADSTACK_PODLET_BIN", ""),
 		Terminal:      env("QUADSTACK_TERMINAL", "true") == "true",
 	}
+	hours, err := strconv.ParseFloat(env("QUADSTACK_MCP_MAX_HOURS", "24"), 64)
+	if err != nil || hours < 0 {
+		return nil, errors.New("QUADSTACK_MCP_MAX_HOURS must be a number of hours, 0 to turn MCP access off")
+	}
+	c.MCPMaxTTL = time.Duration(hours * float64(time.Hour))
 	if c.PodletBin == "" {
 		c.PodletBin, _ = exec.LookPath("podlet")
 	}

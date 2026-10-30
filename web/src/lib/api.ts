@@ -71,6 +71,25 @@ export type Version = { id: string; time: string; size: number }
 
 export type Image = { Id: string; Names: string[] | null; Size: number; Created: number; Containers: number; Dangling: boolean }
 
+export type Perm = { id: string; group: string; label: string; help: string; scoped: boolean }
+
+export type Rules = Record<string, string[]>
+
+export type Grant = {
+  id: string
+  label: string
+  createdBy: string
+  created: string
+  expires: string
+  revoked?: string
+  lastUsed?: string
+  rules: Rules
+}
+
+export type AuditEntry = { time: string; grant: string; label: string; tool: string; args?: unknown; result: 'ok' | 'denied' | 'error'; error?: string }
+
+export type McpInfo = { enabled: boolean; maxMinutes: number; endpoint: string; permissions: Perm[]; grants: Grant[]; audit: AuditEntry[] }
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -124,6 +143,10 @@ export const api = {
   secrets: () => call<SecretInfo[]>('GET', '/api/secrets'),
   setSecret: (s: { name: string; value?: string; fromFile?: string; replace?: boolean }) => call('POST', '/api/secrets', s),
   removeSecret: (name: string, force = false) => call('DELETE', '/api/secrets?' + q({ name, force: force ? '1' : '0' })),
+  mcp: () => call<McpInfo>('GET', '/api/mcp'),
+  createGrant: (g: { label: string; minutes: number; rules: Rules }) => call<{ grant: Grant; token: string }>('POST', '/api/mcp/grants', g),
+  updateGrant: (id: string, g: { label: string; minutes: number; rules: Rules }) => call<Grant>('PUT', '/api/mcp/grants/' + id, g),
+  revokeGrant: (id: string) => call('DELETE', '/api/mcp/grants/' + id),
   convert: (input: string) => call<{ output: string }>('POST', '/api/convert', { input }),
 }
 

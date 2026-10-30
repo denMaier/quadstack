@@ -36,6 +36,8 @@ func main() {
 		files:   &Files{cfg: cfg},
 		systemd: &Systemd{},
 		static:  static,
+		grants:  newGrants(cfg),
+		audit:   newAudit(cfg),
 	}
 	if cfg.QuadletBin == "" {
 		log.Print("quadlet generator not found: files are saved without validation")

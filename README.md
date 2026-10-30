@@ -21,6 +21,7 @@ Quadstack runs as a user service of the account that owns the Quadlets. It has n
 - **Secrets.** Podman secrets: create, replace and delete, with the files that use each one. Values go in over stdin and are never shown. In a container's editor, **Secrets** moves an `Environment=` value or a mounted key file into a secret and rewrites the line to `Secret=`.
 - **Images.** A list with sizes and usage, plus pruning of dangling or unused images.
 - **Import.** Paste a `docker run` command or a compose file and get Quadlet files. This needs [podlet](https://github.com/containers/podlet) on `PATH`.
+- **AI access over MCP, off by default.** See [AI access](#ai-access-mcp).
 - **Sign-in with OpenID Connect only** (Pocket ID, Authentik, Keycloak, …). Access is limited to the listed users and/or groups. Quadstack refuses to start without such a list.
 
 ## Requirements
@@ -95,12 +96,26 @@ Every setting is an environment variable. See [`deploy/quadstack.env.example`](d
 | `QUADSTACK_STATE_DIR` | `~/.local/state/quadstack` | History and the session key |
 | `QUADSTACK_QUADLET_BIN` | found in `/usr/libexec/podman` or `/usr/lib/podman` | Validation is skipped when it is missing |
 | `QUADSTACK_PODLET_BIN` | `podlet` on `PATH` | Enables Import |
-| `QUADSTACK_TERMINAL` | `true` | Shells into containers |
+| `QUADSTACK_TERMINAL` | `true` | Shells into containers, and the MCP `exec` tool |
+| `QUADSTACK_MCP_MAX_HOURS` | `24` | The longest an MCP grant may last; `0` turns MCP access off |
+
+## AI access (MCP)
+
+Quadstack has an MCP endpoint at `/mcp` for AI assistants such as Claude Code. It refuses every request until you create a **grant** under **AI access**. A grant has:
+
+- **An end.** It lasts from 15 minutes up to `QUADSTACK_MCP_MAX_HOURS`, and **End now** stops it at once.
+- **Its own bearer token.** The token is shown once, with a ready `claude mcp add` command. Quadstack stores only its SHA-256 hash.
+- **Rules.** A matrix of permissions by stack. **All stacks** also covers stacks created later and the shared networks and volumes. The per-stack permissions are: See, Read, Env (`.env` files, which often hold credentials), History, Write, Delete, Logs, Start, Stop, Restart, Pull and Exec. Account-wide ones cover networks and volumes, images (list, prune) and secrets (list, set, delete).
+
+Tools the grant does not allow are not offered at all. The server is rebuilt for each request, so edits and revocations reach a running session immediately. Each call is checked again against the current rules. The rules also cover a file's stack after a change: a top-level container that sets `Pod=` joins the pod's stack, so that edit needs Write on both stacks. Writes are validated by `quadlet` and refused when they fail, with no override. Secret values can be set but never read.
+
+Every call, including denied ones, goes to `~/.local/state/quadstack/mcp-audit.jsonl` and the **AI access** page. The log keeps the arguments, but replaces file contents with their size and hash and leaves secret values out.
 
 ## Security notes
 
 - Anyone who can sign in can do what the Quadlet account can do. That includes mounting any path the account can read into a container. Keep the allowed users and groups short.
 - Changing requests need a same-site session cookie and a custom header. Websockets only accept the origin of `QUADSTACK_PUBLIC_URL`.
+- An MCP grant acts with the account's rights within its rules. Exec and Write on a stack are effectively full control of that stack's containers; Write can also bind-mount any path the account can read.
 - Quadstack is meant for a LAN or VPN. Don't expose it to the internet without more protection in front.
 
 ## Coming from another manager
