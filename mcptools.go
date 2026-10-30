@@ -154,6 +154,38 @@ func managedPath(p string) (string, error) {
 	return rel, err
 }
 
+// MCP writes may only create Quadlet source files directly in a stack directory
+// or at the Quadlet root. In particular, drop-ins can affect other units.
+func writableQuadletPath(p string) (string, error) {
+	rel, err := managedPath(p)
+	if err != nil {
+		return "", err
+	}
+	if _, ok := kinds[path.Ext(rel)]; !ok || strings.Count(rel, "/") > 1 {
+		return "", errors.New("writes are limited to Quadlet files directly in a stack directory or the Quadlet root")
+	}
+	return rel, nil
+}
+
+// A scoped write must stay in the directory of an existing granted stack.
+// Top-level stacks share a directory, so the separate scope checks still decide
+// which of their files the grant may change.
+func checkWriteDirectory(g Grant, inv *Inventory, rel, scope string) error {
+	if g.Allows("files.write", scopeAll) {
+		return nil
+	}
+	dir := path.Dir(rel)
+	if scope == scopeShared && dir == "." {
+		return nil
+	}
+	for _, st := range inv.Stacks {
+		if st.ID == scope && path.Clean(firstNonEmpty(st.Dir, ".")) == dir {
+			return nil
+		}
+	}
+	return deny("files.write outside the directory of an existing allowed stack")
+}
+
 // tail keeps the last n bytes of b, which is the part of a log or command output that matters
 func tail(b []byte, n int) string {
 	if len(b) <= n {
@@ -287,7 +319,7 @@ func (t *toolset) register() {
 					return nil, err
 				}
 			}
-			content, err := s.files.Read(rel)
+			content, err := s.files.mcpRead(rel)
 			if err != nil {
 				return nil, err
 			}
@@ -301,22 +333,30 @@ func (t *toolset) register() {
 		if err != nil {
 			return "", err
 		}
-		if _, err := s.files.Read(rel); err == nil {
+		if _, err := s.files.mcpRead(rel); err == nil {
 			if err := need(g, "files.write", scopeFor(inv, rel)); err != nil {
 				return "", err
 			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", err
 		}
 		after, err := s.files.ScanWith(rel, content)
 		if err != nil {
 			return "", err
 		}
 		scope := scopeFor(after, rel)
-		return scope, need(g, "files.write", scope)
+		if err := need(g, "files.write", scope); err != nil {
+			return "", err
+		}
+		if err := checkWriteDirectory(g, inv, rel, scope); err != nil {
+			return "", err
+		}
+		return scope, nil
 	}
 
 	add(t, []string{"files.write"}, &mcp.Tool{Name: "validate_file", Description: "Check file content with Podman's quadlet generator without saving it.", Annotations: readOnly("Validate file")},
 		func(ctx context.Context, g Grant, in validateArgs) (any, error) {
-			rel, err := managedPath(in.Path)
+			rel, err := writableQuadletPath(in.Path)
 			if err != nil {
 				return nil, err
 			}
@@ -328,7 +368,7 @@ func (t *toolset) register() {
 
 	add(t, []string{"files.write"}, &mcp.Tool{Name: "write_file", Description: "Create or replace a file. It is validated first and not saved when validation fails; the previous version stays in the history.", Annotations: changes("Write file", false)},
 		func(ctx context.Context, g Grant, in writeArgs) (any, error) {
-			rel, err := managedPath(in.Path)
+			rel, err := writableQuadletPath(in.Path)
 			if err != nil {
 				return nil, err
 			}
@@ -349,7 +389,7 @@ func (t *toolset) register() {
 			if !v.OK {
 				return nil, fmt.Errorf("validation failed, nothing was saved:\n%s", v.Output)
 			}
-			if err := s.files.Write(rel, in.Content); err != nil {
+			if err := s.files.mcpWrite(rel, in.Content); err != nil {
 				return nil, err
 			}
 			res := map[string]any{"saved": rel, "stack": scope, "validation": v}
@@ -386,14 +426,29 @@ func (t *toolset) register() {
 			if err := need(g, "files.delete", scope); err != nil {
 				return nil, err
 			}
-			f := parseFile(s.files.abs(rel), rel)
-			if in.Stop && f.Unit != "" {
+			if _, err := s.files.mcpRead(rel); err != nil {
+				return nil, err
+			}
+			var unit string
+			for _, st := range inv.Stacks {
+				for _, f := range st.Files {
+					if f.Path == rel {
+						unit = f.Unit
+					}
+				}
+			}
+			for _, r := range inv.Resources {
+				if r.Path == rel {
+					unit = r.Unit
+				}
+			}
+			if in.Stop && unit != "" {
 				if err := need(g, "units.stop", scope); err != nil {
 					return nil, err
 				}
-				s.systemd.Action(ctx, f.Unit, "stop")
+				s.systemd.Action(ctx, unit, "stop")
 			}
-			if err := s.files.Delete(rel); err != nil {
+			if err := s.files.mcpDelete(rel); err != nil {
 				return nil, err
 			}
 			s.systemd.Reload(ctx)

@@ -42,7 +42,7 @@ var mcpPerms = []Perm{
 	{"files.read", "Stacks", "Read", "Read Quadlet and drop-in files", true},
 	{"env.read", "Stacks", "Env", "Read .env files, which often hold credentials", true},
 	{"history.read", "Stacks", "History", "Read earlier versions of files", true},
-	{"files.write", "Stacks", "Write", "Create and change files (refused when quadlet validation fails) and daemon-reload", true},
+	{"files.write", "Stacks", "Write", "Create and change Quadlet source files directly in the stack directory and daemon-reload", true},
 	{"files.delete", "Stacks", "Delete", "Delete files", true},
 	{"logs.read", "Stacks", "Logs", "Read the journal of the stack's units", true},
 	{"units.start", "Stacks", "Start", "Start units", true},

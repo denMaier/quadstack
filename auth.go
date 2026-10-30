@@ -179,6 +179,7 @@ func (a *Authenticator) HandleLogin(w http.ResponseWriter, r *http.Request) {
 type claims struct {
 	Sub               string `json:"sub"`
 	Email             string `json:"email"`
+	EmailVerified     bool   `json:"email_verified"`
 	PreferredUsername string `json:"preferred_username"`
 	Name              string `json:"name"`
 	Groups            []string
@@ -187,7 +188,7 @@ type claims struct {
 // allowed checks the verified claims against the configured users and groups
 func (a *Authenticator) allowed(c claims) bool {
 	for _, u := range a.cfg.AllowedUsers {
-		if u == c.Sub || (c.Email != "" && strings.EqualFold(u, c.Email)) || (c.PreferredUsername != "" && u == c.PreferredUsername) {
+		if u == c.Sub || (c.EmailVerified && c.Email != "" && strings.EqualFold(u, c.Email)) || (!strings.Contains(u, "@") && c.PreferredUsername != "" && u == c.PreferredUsername) {
 			return true
 		}
 	}
@@ -260,7 +261,7 @@ func (a *Authenticator) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	cl.Groups = stringList(all[a.cfg.GroupsClaim])
 	// Some providers only put groups in the userinfo response
 	if len(cl.Groups) == 0 {
-		if ui, err := p.UserInfo(ctx, oauth2.StaticTokenSource(tok)); err == nil {
+		if ui, err := p.UserInfo(ctx, oauth2.StaticTokenSource(tok)); err == nil && sameSubject(cl.Sub, ui.Subject) {
 			var uall map[string]any
 			if ui.Claims(&uall) == nil {
 				cl.Groups = stringList(uall[a.cfg.GroupsClaim])
@@ -289,6 +290,10 @@ func (a *Authenticator) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	a.clearCookie(w, flowCookie)
 	a.setCookie(w, sessionCookie, token, sessionTTL)
 	http.Redirect(w, r, flow.Next, http.StatusFound)
+}
+
+func sameSubject(idTokenSubject, userInfoSubject string) bool {
+	return idTokenSubject != "" && idTokenSubject == userInfoSubject
 }
 
 func (a *Authenticator) HandleLogout(w http.ResponseWriter, r *http.Request) {

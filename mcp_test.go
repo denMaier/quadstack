@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -126,7 +127,7 @@ func TestMCP(t *testing.T) {
 	}
 
 	// Edits apply to the open session
-	grant("PUT", "/api/mcp/grants/"+id, `{"label":"claude","rules":{"files.write":["d/web","r/app"]}}`)
+	grant("PUT", "/api/mcp/grants/"+id, `{"label":"claude","rules":{"files.write":["d/web","r/app","d/not-created"]}}`)
 	if out, isErr := callText(t, cs, "write_file", map[string]any{"path": "web/web.container", "content": "[Container]\nImage=nginx:2\n", "apply": "none"}); isErr {
 		t.Fatalf("write granted: %s", out)
 	}
@@ -139,6 +140,19 @@ func TestMCP(t *testing.T) {
 	}
 	if out, isErr := callText(t, cs, "write_file", map[string]any{"path": "web/web.container", "content": "x", "apply": "restart"}); !isErr || !strings.Contains(out, "units.restart") {
 		t.Fatalf("restart needs units.restart: %s", out)
+	}
+	for _, p := range []string{"web/web.env", "web/web.container.d/override.conf", "web/nested/evil.container"} {
+		if out, isErr := callText(t, cs, "write_file", map[string]any{"path": p, "content": "x", "apply": "none"}); !isErr {
+			t.Fatalf("write %s should be rejected: %s", p, out)
+		}
+	}
+	for _, p := range []string{"db/db.container", "db/new.container", "arr.pod", "other.container", "not-created/new.container"} {
+		if out, isErr := callText(t, cs, "write_file", map[string]any{"path": p, "content": "[Container]\nImage=nginx\n", "apply": "none"}); !isErr {
+			t.Fatalf("write outside an existing granted stack %s: %s", p, out)
+		}
+	}
+	if out, isErr := callText(t, cs, "write_file", map[string]any{"path": "web/new.container", "content": "[Container]\nImage=nginx\n", "apply": "none"}); isErr {
+		t.Fatalf("new Quadlet in granted stack: %s", out)
 	}
 	// files.read was removed by the edit, so the tool is no longer offered at all
 	if _, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "read_file", Arguments: map[string]any{"path": "web/web.container"}}); err == nil {
@@ -191,6 +205,36 @@ func TestMCP(t *testing.T) {
 	}
 	if !slices.Contains(results, "read_file:denied") || !slices.Contains(results, "write_file:ok") {
 		t.Fatalf("audit = %v", results)
+	}
+}
+
+func TestMCPRejectsSymlinks(t *testing.T) {
+	s, _ := testServer(t)
+	if err := s.files.Write("web/app.container", "original"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.files.Write("db/secret.container", "secret"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(s.cfg.QuadletDir, "db"), filepath.Join(s.cfg.QuadletDir, "web", "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(s.cfg.QuadletDir, "db", "secret.container"), filepath.Join(s.cfg.QuadletDir, "web", "linked.container")); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"web/link/secret.container", "web/linked.container"} {
+		if _, err := s.files.mcpRead(p); err == nil {
+			t.Errorf("read followed %s", p)
+		}
+		if err := s.files.mcpWrite(p, "changed"); err == nil {
+			t.Errorf("write followed %s", p)
+		}
+		if err := s.files.mcpDelete(p); err == nil {
+			t.Errorf("delete followed %s", p)
+		}
+	}
+	if got, err := s.files.Read("db/secret.container"); err != nil || got != "secret" {
+		t.Fatalf("target changed: %q %v", got, err)
 	}
 }
 

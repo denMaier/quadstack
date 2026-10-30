@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -14,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const historyKeep = 50
@@ -30,6 +33,111 @@ func (fl *Files) abs(rel string) string {
 func (fl *Files) Read(rel string) (string, error) {
 	b, err := os.ReadFile(fl.abs(rel))
 	return string(b), err
+}
+
+// mcpParent opens every directory without following links. Holding each directory
+// descriptor prevents a concurrent rename from redirecting the operation.
+func (fl *Files) mcpParent(rel string, create bool) (int, string, error) {
+	parts := strings.Split(rel, "/")
+	fd, err := unix.Open(fl.cfg.QuadletDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return -1, "", err
+	}
+	for _, part := range parts[:len(parts)-1] {
+		next, e := unix.Openat(fd, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+		if errors.Is(e, unix.ENOENT) && create {
+			if e = unix.Mkdirat(fd, part, 0o755); e == nil || errors.Is(e, unix.EEXIST) {
+				next, e = unix.Openat(fd, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+			}
+		}
+		unix.Close(fd)
+		if e != nil {
+			return -1, "", e
+		}
+		fd = next
+	}
+	return fd, parts[len(parts)-1], nil
+}
+
+func mcpReadAt(fd int, name string) ([]byte, fs.FileMode, error) {
+	f, err := unix.Openat(fd, name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, 0, err
+	}
+	file := os.NewFile(uintptr(f), name)
+	defer file.Close()
+	st, err := file.Stat()
+	if err != nil {
+		return nil, 0, err
+	}
+	if !st.Mode().IsRegular() {
+		return nil, 0, errors.New("not a regular file")
+	}
+	b, err := io.ReadAll(file)
+	return b, st.Mode().Perm(), err
+}
+
+func (fl *Files) mcpRead(rel string) (string, error) {
+	fd, name, err := fl.mcpParent(rel, false)
+	if err != nil {
+		return "", err
+	}
+	defer unix.Close(fd)
+	b, _, err := mcpReadAt(fd, name)
+	return string(b), err
+}
+
+func (fl *Files) mcpWrite(rel, content string) error {
+	fd, name, err := fl.mcpParent(rel, true)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(fd)
+	old, mode, err := mcpReadAt(fd, name)
+	if err == nil {
+		if err = fl.snapshotContent(rel, old); err != nil {
+			return err
+		}
+	} else if errors.Is(err, unix.ENOENT) {
+		mode = 0o600
+	} else {
+		return err
+	}
+	tmp := ".quadstack-" + randomHex(16)
+	t, err := unix.Openat(fd, tmp, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, uint32(mode))
+	if err != nil {
+		return err
+	}
+	defer unix.Unlinkat(fd, tmp, 0)
+	f := os.NewFile(uintptr(t), tmp)
+	if _, err = f.WriteString(content); err != nil {
+		f.Close()
+		return err
+	}
+	if err = f.Chmod(mode); err != nil {
+		f.Close()
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	return unix.Renameat(fd, tmp, fd, name)
+}
+
+func (fl *Files) mcpDelete(rel string) error {
+	fd, name, err := fl.mcpParent(rel, false)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(fd)
+	b, _, err := mcpReadAt(fd, name)
+	if err != nil {
+		return err
+	}
+	if err = fl.snapshotContent(rel, b); err != nil {
+		return err
+	}
+	return unix.Unlinkat(fd, name, 0)
 }
 
 // Validation is the generator's verdict on the directory with one file replaced
@@ -249,6 +357,10 @@ func (fl *Files) snapshot(rel string) error {
 	if err != nil {
 		return err
 	}
+	return fl.snapshotContent(rel, b)
+}
+
+func (fl *Files) snapshotContent(rel string, b []byte) error {
 	dir := fl.historyDir(rel)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err

@@ -124,7 +124,7 @@ Every setting is an environment variable. See [`deploy/quadstack.env.example`](d
 | `QUADSTACK_OIDC_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET` | *required* (secret optional for public clients) | |
 | `QUADSTACK_OIDC_SCOPES` | `openid profile email groups` | |
 | `QUADSTACK_OIDC_GROUPS_CLAIM` | `groups` | Read from the ID token, or from userinfo when the ID token has none |
-| `QUADSTACK_ALLOWED_USERS` | | `sub`, `email` or `preferred_username` values, comma separated |
+| `QUADSTACK_ALLOWED_USERS` | | `sub`, verified `email` or `preferred_username` values, comma separated. Values containing `@` are matched as a subject or verified email, not as a username. |
 | `QUADSTACK_ALLOWED_GROUPS` | | Groups that may sign in |
 | `QUADSTACK_QUADLET_DIR` | `~/.config/containers/systemd` | |
 | `QUADSTACK_STATE_DIR` | `~/.local/state/quadstack` | History and the session key |
@@ -175,7 +175,7 @@ A new file in a new folder belongs to a stack that does not exist yet, so creati
 | `files.read` | Read | `read_file` | Quadlet and drop-in files |
 | `env.read` | Env | with `read_file`, `file_history` | `.env` files, which often hold credentials. Needs Read or History as well |
 | `history.read` | History | `file_history` | The saved versions of a file |
-| `files.write` | Write | `write_file`, `validate_file`, `daemon_reload` | Creating and replacing files. A file Podman's `quadlet` rejects is not saved, and MCP has no override |
+| `files.write` | Write | `write_file`, `validate_file`, `daemon_reload` | Creating and replacing Quadlet source files directly in the stack directory (or at the Quadlet root for top-level stacks). It cannot write `.env` files, drop-ins, or nested files. A file Podman's `quadlet` rejects is not saved, and MCP has no override |
 | `files.delete` | Delete | `delete_file` | Deleting files. The previous version stays in the history |
 | `logs.read` | Logs | `read_logs` | Journal lines of a unit or a whole stack, up to 2000 |
 | `units.start`, `units.stop`, `units.restart` | Start, Stop, Restart | `unit_action`, `stack_action` | Each action separately. Restart is also needed for `write_file` with `apply: restart`, and Stop for `delete_file` with `stop` |
@@ -195,6 +195,8 @@ A new file in a new folder belongs to a stack that does not exist yet, so creati
 - **Hidden tools.** Tools that the grant does not allow are not listed, and calling one fails.
 - **Live rules.** The MCP server is rebuilt for every request from the grant as it is now. Each call checks the grant again before it runs, so an edit, an end or a revocation applies to a session that is already running.
 - **A file's stack before and after a change.** A change must be allowed for the stack the file is in and for the stack it ends up in. A top-level container that sets `Pod=` joins that pod's stack, so this edit needs Write on both stacks.
+- **Stack directories.** A stack-scoped write must be directly inside that existing stack's directory. Top-level stacks share the Quadlet root, but the file must also belong to an allowed stack. Creating a stack in a new directory requires Write on All stacks.
+- **No symlink traversal.** MCP file reads, writes and deletes refuse symlinked files and directories.
 - **Units and containers.** Units and containers are matched to the stack whose file defines them. A container that no Quadlet file started needs Exec on **All stacks**.
 
 ### Audit log
@@ -206,6 +208,7 @@ Every call goes to `~/.local/state/quadstack/mcp-audit.jsonl` and to the **AI ac
 - Anyone who can sign in can do what the Quadlet account can do. That includes mounting any path the account can read into a container. Keep the allowed users and groups short.
 - Changing requests need a same-site session cookie and a custom header. Websockets only accept the origin of `QUADSTACK_PUBLIC_URL`.
 - An MCP grant acts with the account's rights within its rules. Exec and Write on a stack are effectively full control of that stack's containers; Write can also bind-mount any path the account can read.
+- Review written Quadlets before starting or restarting them: their service directives can execute commands as the Quadstack account. A write-only grant does not prevent another operator, a dependency, or an automatic start from starting a changed unit.
 - Quadstack is meant for a LAN or VPN. Don't expose it to the internet without more protection in front.
 
 ## Coming from another manager
