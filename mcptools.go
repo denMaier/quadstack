@@ -72,13 +72,13 @@ func describeScope(scope string) string {
 	return "stack " + scope
 }
 
-func (s *Server) mcpServer(g Grant) *mcp.Server {
+func (s *Server) mcpServer(g Grant, from string) *mcp.Server {
 	srv := mcp.NewServer(&mcp.Implementation{Name: mcpServerName(), Title: "Quadstack on " + hostname(), Version: version}, &mcp.ServerOptions{
 		Instructions: "Quadstack manages rootless Podman Quadlets on " + hostname() + ". Access is limited to what the grant " +
 			strconv.Quote(g.Label) + " allows, until " + g.Expires.Format(time.RFC3339) + ". Call access_info to see the rules. " +
 			"Stacks are identified as d/<folder> or r/<unit name>. Every call is logged.",
 	})
-	t := &toolset{s: s, srv: srv, grant: g}
+	t := &toolset{s: s, srv: srv, grant: g, from: from}
 	t.register()
 	return srv
 }
@@ -87,6 +87,7 @@ type toolset struct {
 	s     *Server
 	srv   *mcp.Server
 	grant Grant
+	from  string // the caller's address, for the audit log
 }
 
 var (
@@ -117,7 +118,7 @@ func add[In any](t *toolset, perms []string, tool *mcp.Tool, h func(ctx context.
 		return
 	}
 	mcp.AddTool(t.srv, tool, func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
-		entry := AuditEntry{Time: time.Now(), Grant: t.grant.ID, Label: t.grant.Label, Tool: tool.Name, Args: auditArgs(in), Result: "ok"}
+		entry := AuditEntry{Time: time.Now(), Grant: t.grant.ID, Label: t.grant.Label, From: t.from, Tool: tool.Name, Args: auditArgs(in), Result: "ok"}
 		g, ok := t.s.grants.Get(t.grant.ID)
 		var out any
 		var err error

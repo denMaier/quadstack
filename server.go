@@ -32,35 +32,36 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /auth/logout", s.auth.HandleLogout)
 
 	api := map[string]http.HandlerFunc{
-		"GET /api/me":                 s.me,
-		"GET /api/stacks":             s.stacks,
-		"POST /api/stacks":            s.createStack,
-		"DELETE /api/stacks/{id...}":  s.removeStack,
-		"POST /api/stack-action":      s.stackAction,
-		"POST /api/unit-action":       s.unitAction,
-		"POST /api/reload":            s.reload,
-		"GET /api/file":               s.readFile,
-		"PUT /api/file":               s.writeFile,
-		"POST /api/file":              s.createFile,
-		"DELETE /api/file":            s.deleteFile,
-		"POST /api/file/move":         s.moveFile,
-		"POST /api/validate":          s.validate,
-		"GET /api/history":            s.history,
-		"GET /api/history/version":    s.historyVersion,
-		"GET /api/images":             s.images,
-		"POST /api/images/prune":      s.pruneImages,
-		"POST /api/convert":           s.convert,
-		"GET /api/podman-resources":   s.podmanResources,
-		"GET /api/secrets":            s.secrets,
-		"POST /api/secrets":           s.setSecret,
-		"DELETE /api/secrets":         s.removeSecret,
-		"GET /api/mcp":                s.mcpInfo,
-		"POST /api/mcp/grants":        s.createGrant,
-		"PUT /api/mcp/grants/{id}":    s.updateGrant,
-		"DELETE /api/mcp/grants/{id}": s.revokeGrant,
-		"GET /ws/logs":                s.wsLogs,
-		"GET /ws/pull":                s.wsPull,
-		"GET /ws/exec":                s.wsExec,
+		"GET /api/me":                   s.me,
+		"GET /api/stacks":               s.stacks,
+		"POST /api/stacks":              s.createStack,
+		"DELETE /api/stacks/{id...}":    s.removeStack,
+		"POST /api/stack-action":        s.stackAction,
+		"POST /api/unit-action":         s.unitAction,
+		"POST /api/reload":              s.reload,
+		"GET /api/file":                 s.readFile,
+		"PUT /api/file":                 s.writeFile,
+		"POST /api/file":                s.createFile,
+		"DELETE /api/file":              s.deleteFile,
+		"POST /api/file/move":           s.moveFile,
+		"POST /api/validate":            s.validate,
+		"GET /api/history":              s.history,
+		"GET /api/history/version":      s.historyVersion,
+		"GET /api/images":               s.images,
+		"POST /api/images/prune":        s.pruneImages,
+		"POST /api/convert":             s.convert,
+		"GET /api/podman-resources":     s.podmanResources,
+		"GET /api/secrets":              s.secrets,
+		"POST /api/secrets":             s.setSecret,
+		"DELETE /api/secrets":           s.removeSecret,
+		"GET /api/mcp":                  s.mcpInfo,
+		"POST /api/mcp/grants":          s.createGrant,
+		"PUT /api/mcp/grants/{id}":      s.updateGrant,
+		"POST /api/mcp/grants/{id}/end": s.endGrant,
+		"DELETE /api/mcp/grants/{id}":   s.deleteGrant,
+		"GET /ws/logs":                  s.wsLogs,
+		"GET /ws/pull":                  s.wsPull,
+		"GET /ws/exec":                  s.wsExec,
 	}
 	for pattern, h := range api {
 		mux.Handle(pattern, s.requireSession(h))
@@ -68,11 +69,11 @@ func (s *Server) Routes() http.Handler {
 
 	// MCP clients authenticate with a grant's bearer token instead of the session cookie
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
-		g, ok := grantFrom(r.Context())
+		c, ok := callerFrom(r.Context())
 		if !ok {
 			return nil
 		}
-		return s.mcpServer(g)
+		return s.mcpServer(c.grant, c.from)
 	}, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
 	for _, m := range []string{"GET", "POST", "DELETE"} {
 		mux.Handle(m+" /mcp", s.mcpEndpoint(mcpHandler))

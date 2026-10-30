@@ -145,20 +145,63 @@ func TestMCP(t *testing.T) {
 		t.Fatal("read_file should be gone")
 	}
 
+	// Ending keeps the token: the same client gets back in once the grant is reactivated
+	grant("POST", "/api/mcp/grants/"+id+"/end", "")
+	if _, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "access_info"}); err == nil {
+		t.Fatal("an ended grant must not answer")
+	}
+	if w := do(t, h, c, "PUT", "/api/mcp/grants/"+id, `{"label":"claude","rules":{}}`, true); w.Code != 400 {
+		t.Fatalf("reactivating needs a duration: %d", w.Code)
+	}
+	grant("PUT", "/api/mcp/grants/"+id, `{"label":"claude","minutes":10,"rules":{"stacks.read":["d/web"]}}`)
+	// The client dropped its session on the 401 and reconnects, as Claude Code does, with the same token
+	cs, err = mcpSession(t, ts.URL, token)
+	if err != nil {
+		t.Fatalf("same token after reactivating: %v", err)
+	}
+	defer cs.Close()
+	if out, isErr := callText(t, cs, "access_info", nil); isErr {
+		t.Fatalf("reactivated grant: %s", out)
+	}
+	var info struct{ Grants []Grant }
+	json.Unmarshal(do(t, h, c, "GET", "/api/mcp", "", false).Body.Bytes(), &info)
+	if len(info.Grants) != 1 || info.Grants[0].LastFrom != "127.0.0.1" {
+		t.Fatalf("last caller address: %+v", info.Grants)
+	}
+
+	// Deleting drops the token for good
 	grant("DELETE", "/api/mcp/grants/"+id, "")
 	if _, err := cs.CallTool(context.Background(), &mcp.CallToolParams{Name: "access_info"}); err == nil {
-		t.Fatal("a revoked grant must not answer")
+		t.Fatal("a deleted grant must not answer")
+	}
+	if w := do(t, h, c, "PUT", "/api/mcp/grants/"+id, `{"label":"claude","minutes":10,"rules":{}}`, true); w.Code != 400 {
+		t.Fatalf("a deleted grant cannot be reactivated: %d", w.Code)
 	}
 
 	audit := s.audit.Recent(50)
 	var results []string
 	for _, e := range audit {
 		results = append(results, e.Tool+":"+e.Result)
+		if e.From != "127.0.0.1" {
+			t.Fatalf("audit entry without the caller's address: %+v", e)
+		}
 		if strings.Contains(string(e.Args), "nginx:2") {
 			t.Fatalf("file contents must not be audited: %s", e.Args)
 		}
 	}
 	if !slices.Contains(results, "read_file:denied") || !slices.Contains(results, "write_file:ok") {
 		t.Fatalf("audit = %v", results)
+	}
+}
+
+func TestClientAddr(t *testing.T) {
+	r := httptest.NewRequest("POST", "/mcp", nil)
+	r.RemoteAddr = "192.168.178.126:51234"
+	if got := clientAddr(r); got != "192.168.178.126" {
+		t.Fatalf("direct: %q", got)
+	}
+	r.Header.Set("X-Forwarded-For", "100.64.0.7, 10.0.0.1")
+	if got := clientAddr(r); got != "100.64.0.7 via 192.168.178.126" {
+		t.Fatalf("proxied: %q", got)
 	}
 }

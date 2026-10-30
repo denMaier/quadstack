@@ -138,7 +138,9 @@ Every setting is an environment variable. See [`deploy/quadstack.env.example`](d
 Quadstack has an [MCP](https://modelcontextprotocol.io) endpoint at `<QUADSTACK_PUBLIC_URL>/mcp` for AI assistants such as Claude Code. It refuses every request until you create a **grant** under **AI access**. A grant has:
 
 - **An end.** It lasts from 15 minutes up to `QUADSTACK_MCP_MAX_HOURS` (24 by default), and **End now** stops it at once. An edit can move the end, but never past that maximum from now.
-- **Its own bearer token.** The token is shown once. Quadstack stores only its SHA-256 hash, so a lost token means a new grant.
+- **Its own bearer token.** The token is shown once. Quadstack stores only its SHA-256 hash.
+  - The token outlives the grant's end: **Reactivate** an ended grant and the same client is let back in for the time you choose. So each machine is set up once.
+  - **Delete** removes the grant and its token for good, for example when you suspect the token was copied.
 - **Rules.** A table of permissions by stack, plus some account-wide permissions. You can start from a preset (Nothing, Read only, Read & operate, Everything) and then change single boxes. Clicking a column or row name switches the whole line.
 
 ### Connecting a client
@@ -150,9 +152,13 @@ claude mcp add --scope user --transport http quadstack-<host> https://quadstack.
   --header "Authorization: Bearer qsm_…"
 ```
 
-The server is named after the machine (`quadstack-<hostname>`), so you can add several Quadstack machines side by side. Each one keeps its own grants, end times and audit log, and Claude Code prefixes the tools with the server name, for example `mcp__quadstack-servarr__list_stacks`. When a grant ends, give the client the new token: run `claude mcp remove quadstack-<host>`, then add the entry again.
+You do this once per machine, because reactivating a grant keeps its token. For a new token, run `claude mcp remove quadstack-<host>` and add the server again. The page also shows the settings as JSON for other clients. Claude Code stores the token in `~/.claude.json`, which is one more reason to delete a grant when a device is lost.
 
-The page also shows the same settings as JSON (`type: http`, `url`, and an `Authorization` header) for other clients. The transport is streamable HTTP without sessions. If a reverse proxy is in front, it must pass the `Authorization` header through to `/mcp`. Once the grant ends, the client gets `401` until you give it a new token.
+The server is named after the machine (`quadstack-<hostname>`), so you can add several Quadstack machines side by side. Each keeps its own grants, end times and audit log. Claude Code prefixes the tools with the server name, for example `mcp__quadstack-servarr__list_stacks`.
+
+The transport is streamable HTTP without sessions. If a reverse proxy is in front, it must pass the `Authorization` header through to `/mcp`. While a grant is ended, its client gets `401`. After **Reactivate**, Claude Code reconnects with the same token, either on its own or through `/mcp` → reconnect.
+
+**Where calls come from.** Each grant shows the address of its last call, and the audit log records the address of every call. Behind a reverse proxy this reads `<client> via <proxy>`, where the client address comes from `X-Forwarded-For`. An unfamiliar address during one of your grants is the sign of a copied token. Make the token useless outside your network by letting Zoraxy accept `/mcp` only from your LAN or VPN.
 
 ### Permissions
 
@@ -193,7 +199,7 @@ A new file in a new folder belongs to a stack that does not exist yet, so creati
 
 ### Audit log
 
-Every call goes to `~/.local/state/quadstack/mcp-audit.jsonl` and to the **AI access** page, with the grant, the tool, the arguments and the result. The result is `ok`, `denied` or `error`. File contents are replaced by their size and a hash, and secret values are left out. The log rotates to `mcp-audit.jsonl.1` at 5 MB. Grants are kept in `mcp-grants.json` in the same directory, and ended grants are removed a week after they end.
+Every call goes to `~/.local/state/quadstack/mcp-audit.jsonl` and to the **AI access** page, with the grant, the caller's address, the tool, the arguments and the result. The result is `ok`, `denied` or `error`. File contents are replaced by their size and a hash, and secret values are left out. The log rotates to `mcp-audit.jsonl.1` at 5 MB. Grants are kept in `mcp-grants.json` in the same directory until you delete them.
 
 ## Security notes
 

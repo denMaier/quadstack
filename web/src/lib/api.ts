@@ -83,10 +83,11 @@ export type Grant = {
   expires: string
   revoked?: string
   lastUsed?: string
+  lastFrom?: string
   rules: Rules
 }
 
-export type AuditEntry = { time: string; grant: string; label: string; tool: string; args?: unknown; result: 'ok' | 'denied' | 'error'; error?: string }
+export type AuditEntry = { time: string; grant: string; label: string; from?: string; tool: string; args?: unknown; result: 'ok' | 'denied' | 'error'; error?: string }
 
 export type McpInfo = { enabled: boolean; maxMinutes: number; endpoint: string; serverName: string; permissions: Perm[]; grants: Grant[]; audit: AuditEntry[] }
 
@@ -146,7 +147,8 @@ export const api = {
   mcp: () => call<McpInfo>('GET', '/api/mcp'),
   createGrant: (g: { label: string; minutes: number; rules: Rules }) => call<{ grant: Grant; token: string }>('POST', '/api/mcp/grants', g),
   updateGrant: (id: string, g: { label: string; minutes: number; rules: Rules }) => call<Grant>('PUT', '/api/mcp/grants/' + id, g),
-  revokeGrant: (id: string) => call('DELETE', '/api/mcp/grants/' + id),
+  endGrant: (id: string) => call('POST', '/api/mcp/grants/' + id + '/end'),
+  deleteGrant: (id: string) => call('DELETE', '/api/mcp/grants/' + id),
   convert: (input: string) => call<{ output: string }>('POST', '/api/convert', { input }),
 }
 

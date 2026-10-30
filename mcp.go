@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -21,8 +22,10 @@ import (
 )
 
 // AI access over MCP is off until someone signed in creates a grant. A grant has a bearer
-// token, an expiry and rules: which permission applies to which stacks. Nothing that is not
-// granted is offered as a tool, and every call is checked again and written to an audit log.
+// token, an expiry and rules: which permission applies to which stacks. Ending a grant keeps
+// its token, so reactivating it lets the same client back in; deleting it drops the token.
+// Nothing that is not granted is offered as a tool, and every call is checked again and
+// written to an audit log with the caller's address.
 
 // Perm is one thing a grant can allow. Scoped permissions name the stacks they apply to;
 // the others apply to the whole account.
@@ -80,9 +83,10 @@ type Grant struct {
 	CreatedBy string              `json:"createdBy"`
 	Created   time.Time           `json:"created"`
 	Expires   time.Time           `json:"expires"`
-	Revoked   *time.Time          `json:"revoked,omitempty"`
+	Revoked   *time.Time          `json:"revoked,omitempty"` // ended by hand; reactivating clears it
 	LastUsed  *time.Time          `json:"lastUsed,omitempty"`
-	Rules     map[string][]string `json:"rules"` // permission -> scopes; account-wide permissions use ["*"]
+	LastFrom  string              `json:"lastFrom,omitempty"` // the address of the last call
+	Rules     map[string][]string `json:"rules"`              // permission -> scopes; account-wide permissions use ["*"]
 }
 
 func (g *Grant) Active() bool {
@@ -172,15 +176,6 @@ func (gs *Grants) load() error {
 }
 
 func (gs *Grants) save() error {
-	// Grants that ended more than a week ago only clutter the list
-	cutoff := time.Now().AddDate(0, 0, -7)
-	gs.list = slices.DeleteFunc(gs.list, func(g *storedGrant) bool {
-		end := g.Expires
-		if g.Revoked != nil && g.Revoked.Before(end) {
-			end = *g.Revoked
-		}
-		return end.Before(cutoff)
-	})
 	b, err := json.MarshalIndent(gs.list, "", "  ")
 	if err != nil {
 		return err
@@ -224,7 +219,8 @@ func (gs *Grants) Create(by, label string, ttl time.Duration, rules map[string][
 	return g.Grant, token, gs.save()
 }
 
-// Update changes an active grant's label and rules, and its expiry when ttl > 0
+// Update changes a grant's label and rules, and its expiry when ttl > 0. An ended grant
+// needs a ttl, and becomes active again with its old token.
 func (gs *Grants) Update(id, label string, ttl time.Duration, rules map[string][]string) (Grant, error) {
 	gs.mu.Lock()
 	defer gs.mu.Unlock()
@@ -235,19 +231,20 @@ func (gs *Grants) Update(id, label string, ttl time.Duration, rules map[string][
 		if g.ID != id {
 			continue
 		}
-		if !g.Active() {
-			return Grant{}, errors.New("this grant has ended; create a new one")
+		if !g.Active() && ttl <= 0 {
+			return Grant{}, errors.New("this grant has ended; choose how long it should run again")
 		}
 		g.Label, g.Rules = label, rules
 		if ttl > 0 {
-			g.Expires = time.Now().Add(ttl)
+			g.Expires, g.Revoked = time.Now().Add(ttl), nil
 		}
 		return g.Grant, gs.save()
 	}
 	return Grant{}, os.ErrNotExist
 }
 
-func (gs *Grants) Revoke(id string) error {
+// End stops a grant at once; its token keeps working after a reactivation
+func (gs *Grants) End(id string) error {
 	gs.mu.Lock()
 	defer gs.mu.Unlock()
 	if err := gs.load(); err != nil {
@@ -265,8 +262,23 @@ func (gs *Grants) Revoke(id string) error {
 	return os.ErrNotExist
 }
 
-// ByToken returns the active grant a bearer token belongs to
-func (gs *Grants) ByToken(token string) (Grant, bool) {
+// Delete removes a grant and with it its token, for good
+func (gs *Grants) Delete(id string) error {
+	gs.mu.Lock()
+	defer gs.mu.Unlock()
+	if err := gs.load(); err != nil {
+		return err
+	}
+	n := len(gs.list)
+	gs.list = slices.DeleteFunc(gs.list, func(g *storedGrant) bool { return g.ID == id })
+	if len(gs.list) == n {
+		return os.ErrNotExist
+	}
+	return gs.save()
+}
+
+// ByToken returns the active grant a bearer token belongs to and records the call's address
+func (gs *Grants) ByToken(token, from string) (Grant, bool) {
 	gs.mu.Lock()
 	defer gs.mu.Unlock()
 	if token == "" || gs.load() != nil {
@@ -276,8 +288,10 @@ func (gs *Grants) ByToken(token string) (Grant, bool) {
 	for _, g := range gs.list {
 		if subtle.ConstantTimeCompare([]byte(h), []byte(g.TokenHash)) == 1 && g.Active() {
 			now := time.Now()
-			g.LastUsed = &now
-			if now.Sub(gs.lastSave) > time.Minute {
+			changed := g.LastFrom != from
+			g.LastUsed, g.LastFrom = &now, from
+			// A new address is saved at once, so it shows even if the service stops right after
+			if changed || now.Sub(gs.lastSave) > time.Minute {
 				gs.save()
 			}
 			return g.Grant, true
@@ -307,6 +321,7 @@ type AuditEntry struct {
 	Time   time.Time       `json:"time"`
 	Grant  string          `json:"grant"`
 	Label  string          `json:"label"`
+	From   string          `json:"from,omitempty"` // the caller's address
 	Tool   string          `json:"tool"`
 	Args   json.RawMessage `json:"args,omitempty"`
 	Result string          `json:"result"` // ok, denied or error
@@ -378,9 +393,28 @@ func auditArgs(in any) json.RawMessage {
 
 type grantCtxKey struct{}
 
-func grantFrom(ctx context.Context) (Grant, bool) {
-	g, ok := ctx.Value(grantCtxKey{}).(Grant)
-	return g, ok
+type mcpCaller struct {
+	grant Grant
+	from  string
+}
+
+func callerFrom(ctx context.Context) (mcpCaller, bool) {
+	c, ok := ctx.Value(grantCtxKey{}).(mcpCaller)
+	return c, ok
+}
+
+// clientAddr is the address a request came from. Behind a reverse proxy the client's own
+// address is in X-Forwarded-For, which anyone can set, so the proxy is named too.
+func clientAddr(r *http.Request) string {
+	peer, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		peer = r.RemoteAddr
+	}
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		client, _, _ := strings.Cut(fwd, ",")
+		return strings.TrimSpace(client) + " via " + peer
+	}
+	return peer
 }
 
 // mcpEndpoint authenticates the bearer token and hands the request to the MCP handler
@@ -391,13 +425,14 @@ func (s *Server) mcpEndpoint(next http.Handler) http.Handler {
 			return
 		}
 		token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		g, ok := s.grants.ByToken(strings.TrimSpace(token))
+		from := clientAddr(r)
+		g, ok := s.grants.ByToken(strings.TrimSpace(token), from)
 		if !ok {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="quadstack"`)
 			writeErr(w, http.StatusUnauthorized, errors.New("no active MCP grant for this token"))
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), grantCtxKey{}, g)))
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), grantCtxKey{}, mcpCaller{g, from})))
 	})
 }
 
@@ -478,9 +513,18 @@ func (s *Server) updateGrant(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, g)
 }
 
-// DELETE /api/mcp/grants/{id} ends a grant at once
-func (s *Server) revokeGrant(w http.ResponseWriter, r *http.Request) {
-	if err := s.grants.Revoke(r.PathValue("id")); err != nil {
+// POST /api/mcp/grants/{id}/end ends a grant at once and keeps its token
+func (s *Server) endGrant(w http.ResponseWriter, r *http.Request) {
+	if err := s.grants.End(r.PathValue("id")); err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true})
+}
+
+// DELETE /api/mcp/grants/{id} removes a grant and its token
+func (s *Server) deleteGrant(w http.ResponseWriter, r *http.Request) {
+	if err := s.grants.Delete(r.PathValue("id")); err != nil {
 		writeErr(w, http.StatusNotFound, err)
 		return
 	}

@@ -8,8 +8,8 @@
   let error = $state('')
   let busy = $state(false)
   let now = $state(Date.now())
-  // The grant being created (id empty) or edited
-  let form = $state<{ id: string; label: string; minutes: number; rules: Rules }>()
+  // The grant being created (id empty), edited, or reactivated (ended)
+  let form = $state<{ id: string; ended: boolean; label: string; minutes: number; rules: Rules }>()
   let created = $state<{ label: string; token: string }>()
   let dialog = $state<HTMLDialogElement>()
   let tokenDialog = $state<HTMLDialogElement>()
@@ -70,8 +70,14 @@
 
   function open(g?: Grant) {
     form = g
-      ? { id: g.id, label: g.label, minutes: 0, rules: structuredClone($state.snapshot(g.rules)) }
-      : { id: '', label: 'Claude', minutes: durations.includes(60) ? 60 : durations[0], rules: {} }
+      ? {
+          id: g.id,
+          ended: !isActive(g),
+          label: g.label,
+          minutes: isActive(g) ? 0 : durations.includes(60) ? 60 : durations[0],
+          rules: structuredClone($state.snapshot(g.rules)),
+        }
+      : { id: '', ended: false, label: 'Claude', minutes: durations.includes(60) ? 60 : durations[0], rules: {} }
     error = ''
     queueMicrotask(() => dialog?.showModal())
   }
@@ -98,10 +104,20 @@
     }
   }
 
-  async function revoke(g: Grant) {
-    if (!confirm(`End "${g.label}" now? Its token stops working immediately.`)) return
+  async function end(g: Grant) {
+    if (!confirm(`End "${g.label}" now? Access stops immediately, also in running sessions. The token is kept, so you can reactivate the grant later.`)) return
     try {
-      await api.revokeGrant(g.id)
+      await api.endGrant(g.id)
+      await load()
+    } catch (e: any) {
+      error = e.message
+    }
+  }
+
+  async function remove(g: Grant) {
+    if (!confirm(`Delete "${g.label}" and its token for good? Clients using it need a new grant and token.`)) return
+    try {
+      await api.deleteGrant(g.id)
       await load()
     } catch (e: any) {
       error = e.message
@@ -154,8 +170,9 @@
   </div>
   <p class="muted">
     An MCP endpoint for AI assistants. It is <b>off</b> while no grant is active. A grant has its own token, lasts at most
-    {info ? fmtDur(info.maxMinutes) : '…'}, and allows exactly what you tick, per stack. Tools it does not allow are not
-    offered at all. Changes and revocations apply to running sessions at once, and every call is logged below.
+    {info ? fmtDur(info.maxMinutes) : '…'} at a time, and allows exactly what you tick, per stack. Tools it does not allow are
+    not offered at all. Changes apply to running sessions at once. <b>End now</b> keeps the token, so <b>Reactivate</b> lets
+    the same client back in; <b>Delete</b> drops it. Every call is logged below with the address it came from.
   </p>
   {#if info && !info.enabled}
     <div class="error-box">MCP access is turned off on this server (QUADSTACK_MCP_MAX_HOURS=0).</div>
@@ -176,10 +193,10 @@
               <td><b>{g.label}</b><div class="muted small">by {g.createdBy}</div></td>
               <td class="small allows">{summary(g)}</td>
               <td class="small nowrap">{remaining(g.expires)}<div class="muted">{fmt(g.expires)}</div></td>
-              <td class="small muted nowrap">{fmt(g.lastUsed) || 'never'}</td>
+              <td class="small muted nowrap">{fmt(g.lastUsed) || 'never'}{#if g.lastFrom}<div>from {g.lastFrom}</div>{/if}</td>
               <td class="actions">
                 <button onclick={() => open(g)}>Edit</button>
-                <button class="danger" onclick={() => revoke(g)}>End now</button>
+                <button class="danger" onclick={() => end(g)}>End now</button>
               </td>
             </tr>
           {:else}
@@ -191,7 +208,7 @@
 
     {#if ended.length}
       <details>
-        <summary class="muted">Ended grants ({ended.length})</summary>
+        <summary class="muted">Ended grants ({ended.length}): their tokens still exist, so reactivating one lets its client back in</summary>
         <div class="panel scroll">
           <table>
             <tbody>
@@ -199,7 +216,14 @@
                 <tr>
                   <td>{g.label}</td>
                   <td class="small muted allows">{summary(g)}</td>
-                  <td class="small muted nowrap">{g.revoked ? 'ended ' + fmt(g.revoked) : 'expired ' + fmt(g.expires)}</td>
+                  <td class="small muted nowrap">
+                    {g.revoked ? 'ended ' + fmt(g.revoked) : 'expired ' + fmt(g.expires)}
+                    {#if g.lastFrom}<div>last from {g.lastFrom}</div>{/if}
+                  </td>
+                  <td class="actions">
+                    <button class="primary" disabled={!info.enabled} onclick={() => open(g)}>Reactivate</button>
+                    <button class="ghost danger" title="Delete grant and token" onclick={() => remove(g)}>🗑</button>
+                  </td>
                 </tr>
               {/each}
             </tbody>
@@ -211,12 +235,13 @@
     <h2>Audit log</h2>
     <div class="panel scroll">
       <table>
-        <thead><tr><th>Time</th><th>Grant</th><th>Tool</th><th>Arguments</th><th>Result</th></tr></thead>
+        <thead><tr><th>Time</th><th>Grant</th><th>From</th><th>Tool</th><th>Arguments</th><th>Result</th></tr></thead>
         <tbody>
           {#each info.audit as e, i (i)}
             <tr>
               <td class="small muted nowrap">{fmt(e.time)}</td>
               <td class="small">{e.label}</td>
+              <td class="small muted nowrap">{e.from ?? ''}</td>
               <td><code>{e.tool}</code></td>
               <td class="small"><code class="args">{e.args ? JSON.stringify(e.args) : ''}</code></td>
               <td class="small">
@@ -225,7 +250,7 @@
               </td>
             </tr>
           {:else}
-            <tr><td colspan="5" class="muted">No calls yet.</td></tr>
+            <tr><td colspan="6" class="muted">No calls yet.</td></tr>
           {/each}
         </tbody>
       </table>
@@ -235,7 +260,8 @@
 
 {#if form && info}
   <dialog class="wide" bind:this={dialog} onclose={() => ((form = undefined), (error = ''))}>
-    <h2>{form.id ? `Edit "${form.label}"` : 'New grant'}</h2>
+    <h2>{form.ended ? `Reactivate "${form.label}"` : form.id ? `Edit "${form.label}"` : 'New grant'}</h2>
+    {#if form.ended}<p class="muted small">The grant keeps its token: a client that used it before is let back in for the time you choose.</p>{/if}
     <form onsubmit={submit} autocomplete="off">
       <div class="row wrap">
         <label class="field grow">
@@ -243,10 +269,10 @@
           <input bind:value={form.label} required maxlength="80" />
         </label>
         <label class="field">
-          {form.id ? 'Ends' : 'Lasts'}
+          {form.id && !form.ended ? 'Ends' : 'Lasts'}
           <select bind:value={form.minutes}>
-            {#if form.id}<option value={0}>keep the current end</option>{/if}
-            {#each durations as m}<option value={m}>{form.id ? fmtDur(m) + ' from now' : fmtDur(m)}</option>{/each}
+            {#if form.id && !form.ended}<option value={0}>keep the current end</option>{/if}
+            {#each durations as m}<option value={m}>{form.id && !form.ended ? fmtDur(m) + ' from now' : fmtDur(m)}</option>{/each}
           </select>
         </label>
       </div>
@@ -325,7 +351,7 @@
         <span class="muted small">{Object.keys(form.rules).length} permission{Object.keys(form.rules).length === 1 ? '' : 's'}</span>
         <span class="grow"></span>
         <button type="button" onclick={() => dialog?.close()}>Cancel</button>
-        <button class="primary" type="submit" disabled={busy}>{form.id ? 'Save' : 'Create grant'}</button>
+        <button class="primary" type="submit" disabled={busy}>{form.ended ? 'Reactivate' : form.id ? 'Save' : 'Create grant'}</button>
       </div>
     </form>
   </dialog>
@@ -335,9 +361,9 @@
   <dialog class="wide" bind:this={tokenDialog} onclose={() => (created = undefined)}>
     <h2>Token for "{created.label}"</h2>
     <p class="muted">
-      This is shown once. Quadstack stores only a hash of it. The server is named <code>{info?.serverName}</code> after this
-      machine, so several machines can be added side by side. For a new token on the same machine, replace the entry
-      (<code>claude mcp remove {info?.serverName}</code> first).
+      Shown once; Quadstack keeps only a hash. You set this up once per machine: ending and reactivating the grant keeps the
+      token. The server is named <code>{info?.serverName}</code> after this machine, so several machines sit side by side.
+      For a new token on the same machine, run <code>claude mcp remove {info?.serverName}</code> first.
     </p>
     <label class="field">Claude Code<textarea readonly rows="3" onfocus={(e) => e.currentTarget.select()}>{claudeCmd}</textarea></label>
     <label class="field">Other MCP clients (JSON)<textarea readonly rows="9" onfocus={(e) => e.currentTarget.select()}>{jsonCfg}</textarea></label>
