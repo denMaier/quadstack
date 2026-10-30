@@ -33,6 +33,40 @@ Quadstack runs as a user service of the account that owns the Quadlets. It has n
 
 ## Install
 
+Run the installer as root. It works on a Proxmox VE host and on an existing machine:
+
+```sh
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/denMaier/quadstack/main/deploy/install.sh)"
+```
+
+It does different things depending on where it runs:
+
+- **On a Proxmox VE host**, it creates a new LXC. It uses the [community-scripts](https://github.com/community-scripts/core) engine, pinned to a tested commit, with its usual dialogs for resources, storage and network. The container is a Debian 13 LXC, unprivileged and with nesting and keyctl enabled, which rootless Podman needs. Inside it, the installer sets up Podman and an account `quadlets` that owns the Quadlets. Later, `update` in the container installs the latest release.
+- **Anywhere else** (an existing LXC, VM or server with systemd), it installs Quadstack on that machine as an add-on. It lists the accounts that already have a Quadlet directory and lets you choose one or create a new one. Podman is installed with apt if it's missing. Running it again offers **update** or **reconfigure**.
+
+It asks for:
+
+- the public URL;
+- the OIDC issuer, client ID and secret;
+- the groups and/or users allowed to sign in;
+- the listen address;
+- whether to allow shells into containers;
+- the longest an MCP grant may last.
+
+It shows the redirect URI to register with your provider before asking for the client. The binary is checked against the release's `SHA256SUMS`. When the account is a system account, the installer offers the journal ACL from [Logs of system accounts](#logs-of-system-accounts).
+
+For an unattended run, answer the questions in the environment and set `QS_YES=1` (see the top of [`deploy/install.sh`](deploy/install.sh)):
+
+```sh
+QS_YES=1 QS_USER=quadlets QS_PUBLIC_URL=https://quadstack.example.com \
+QS_ISSUER=https://id.example.com QS_CLIENT_ID=quadstack QS_CLIENT_SECRET=… QS_ALLOWED_GROUPS=admins \
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/denMaier/quadstack/main/deploy/install.sh)"
+```
+
+In an unprivileged LXC, the account's subordinate IDs have to fit in the container's 65536 IDs. A new account therefore gets the IDs above its own UID, which leaves containers about 64,500 UIDs instead of 65,536. Images with files owned by higher IDs, such as `nobody` (65534), fail to pull there. Give the LXC a larger ID map if you need those.
+
+### Manual install
+
 As the account that owns the Quadlets:
 
 ```sh
@@ -70,7 +104,7 @@ This lets the account, and so anyone who can sign in to Quadstack, read the whol
 
 ### Update
 
-Replace the binary and restart; settings and history stay:
+Run the installer again and choose **update**, or run `update` in an LXC it created. By hand, replace the binary and restart; settings and history stay:
 
 ```sh
 curl -L -o ~/.local/bin/quadstack \

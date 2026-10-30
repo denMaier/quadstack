@@ -20,3 +20,6 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: make web
       - run: make test
+      # The Proxmox scripts use variables the community-scripts engine defines
+      - run: shellcheck -S warning deploy/install.sh
+      - run: shellcheck -S warning -e SC1090,SC2034,SC2154 deploy/proxmox/ct/*.sh deploy/proxmox/install/*.sh
