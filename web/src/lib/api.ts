@@ -88,7 +88,7 @@ export type Grant = {
 
 export type AuditEntry = { time: string; grant: string; label: string; tool: string; args?: unknown; result: 'ok' | 'denied' | 'error'; error?: string }
 
-export type McpInfo = { enabled: boolean; maxMinutes: number; endpoint: string; permissions: Perm[]; grants: Grant[]; audit: AuditEntry[] }
+export type McpInfo = { enabled: boolean; maxMinutes: number; endpoint: string; serverName: string; permissions: Perm[]; grants: Grant[]; audit: AuditEntry[] }
 
 export class ApiError extends Error {
   constructor(

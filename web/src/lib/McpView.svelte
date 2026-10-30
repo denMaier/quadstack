@@ -126,11 +126,13 @@
   }
 
   const claudeCmd = $derived(
-    created && info ? `claude mcp add --transport http quadstack ${info.endpoint} --header "Authorization: Bearer ${created.token}"` : '',
+    created && info
+      ? `claude mcp add --scope user --transport http ${info.serverName} ${info.endpoint} --header "Authorization: Bearer ${created.token}"`
+      : '',
   )
   const jsonCfg = $derived(
     created && info
-      ? JSON.stringify({ mcpServers: { quadstack: { type: 'http', url: info.endpoint, headers: { Authorization: 'Bearer ' + created.token } } } }, null, 2)
+      ? JSON.stringify({ mcpServers: { [info.serverName]: { type: 'http', url: info.endpoint, headers: { Authorization: 'Bearer ' + created.token } } } }, null, 2)
       : '',
   )
 
@@ -161,7 +163,7 @@
   {#if error && !form}<div class="error-box">{error}</div>{/if}
 
   {#if info}
-    <p class="small">Endpoint: <code>{info.endpoint}</code>
+    <p class="small">Endpoint: <code>{info.endpoint}</code> · server name <code>{info.serverName}</code>
       {#if active.length}<span class="badge on">on: {active.length} active grant{active.length > 1 ? 's' : ''}</span>{:else}<span class="badge">off</span>{/if}
     </p>
 
@@ -332,7 +334,11 @@
 {#if created}
   <dialog class="wide" bind:this={tokenDialog} onclose={() => (created = undefined)}>
     <h2>Token for "{created.label}"</h2>
-    <p class="muted">This is shown once. Quadstack stores only a hash of it.</p>
+    <p class="muted">
+      This is shown once. Quadstack stores only a hash of it. The server is named <code>{info?.serverName}</code> after this
+      machine, so several machines can be added side by side. For a new token on the same machine, replace the entry
+      (<code>claude mcp remove {info?.serverName}</code> first).
+    </p>
     <label class="field">Claude Code<textarea readonly rows="3" onfocus={(e) => e.currentTarget.select()}>{claudeCmd}</textarea></label>
     <label class="field">Other MCP clients (JSON)<textarea readonly rows="9" onfocus={(e) => e.currentTarget.select()}>{jsonCfg}</textarea></label>
     <div class="row foot">

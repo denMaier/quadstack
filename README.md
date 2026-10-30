@@ -146,11 +146,13 @@ Quadstack has an [MCP](https://modelcontextprotocol.io) endpoint at `<QUADSTACK_
 After **Create grant**, the page shows the token with a ready command for Claude Code:
 
 ```sh
-claude mcp add --transport http quadstack https://quadstack.example.com/mcp \
+claude mcp add --scope user --transport http quadstack-<host> https://quadstack.example.com/mcp \
   --header "Authorization: Bearer qsm_…"
 ```
 
-It also shows the same settings as JSON (`type: http`, `url`, and an `Authorization` header) for other clients. The transport is streamable HTTP without sessions. If a reverse proxy is in front, it must pass the `Authorization` header through to `/mcp`. Once the grant ends, the client gets `401` until you give it a new token.
+The server is named after the machine (`quadstack-<hostname>`), so you can add several Quadstack machines side by side. Each one keeps its own grants, end times and audit log, and Claude Code prefixes the tools with the server name, for example `mcp__quadstack-servarr__list_stacks`. When a grant ends, give the client the new token: run `claude mcp remove quadstack-<host>`, then add the entry again.
+
+The page also shows the same settings as JSON (`type: http`, `url`, and an `Authorization` header) for other clients. The transport is streamable HTTP without sessions. If a reverse proxy is in front, it must pass the `Authorization` header through to `/mcp`. Once the grant ends, the client gets `401` until you give it a new token.
 
 ### Permissions
 

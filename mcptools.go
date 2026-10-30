@@ -73,7 +73,7 @@ func describeScope(scope string) string {
 }
 
 func (s *Server) mcpServer(g Grant) *mcp.Server {
-	srv := mcp.NewServer(&mcp.Implementation{Name: "quadstack", Version: version}, &mcp.ServerOptions{
+	srv := mcp.NewServer(&mcp.Implementation{Name: mcpServerName(), Title: "Quadstack on " + hostname(), Version: version}, &mcp.ServerOptions{
 		Instructions: "Quadstack manages rootless Podman Quadlets on " + hostname() + ". Access is limited to what the grant " +
 			strconv.Quote(g.Label) + " allows, until " + g.Expires.Format(time.RFC3339) + ". Call access_info to see the rules. " +
 			"Stacks are identified as d/<folder> or r/<unit name>. Every call is logged.",

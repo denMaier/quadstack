@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -62,6 +63,9 @@ func TestMCP(t *testing.T) {
 	// Off until a grant exists
 	if w := do(t, h, nil, "POST", "/mcp", `{}`, false); w.Code != 401 {
 		t.Fatalf("no grant: %d", w.Code)
+	}
+	if n := mcpServerName(); !regexp.MustCompile(`^quadstack(-[a-z0-9]+(-[a-z0-9]+)*)?$`).MatchString(n) {
+		t.Fatalf("server name %q", n)
 	}
 	if _, err := mcpSession(t, ts.URL, "qsm_wrong"); err == nil {
 		t.Fatal("a wrong token must not connect")

@@ -412,6 +412,7 @@ func (s *Server) mcpInfo(w http.ResponseWriter, r *http.Request) {
 		"enabled":     s.cfg.MCPMaxTTL > 0,
 		"maxMinutes":  int(s.cfg.MCPMaxTTL / time.Minute),
 		"endpoint":    s.cfg.PublicURL + "/mcp",
+		"serverName":  mcpServerName(),
 		"permissions": mcpPerms,
 		"grants":      gs,
 		"audit":       s.audit.Recent(200),
@@ -484,6 +485,18 @@ func (s *Server) revokeGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]bool{"ok": true})
+}
+
+// mcpServerName names this machine's MCP server, quadstack-<host>, so a client that adds
+// several machines keeps them apart (Claude Code prefixes tools with it)
+func mcpServerName() string {
+	h := strings.ToLower(hostname())
+	h, _, _ = strings.Cut(h, ".")
+	h = strings.Trim(regexp.MustCompile(`[^a-z0-9]+`).ReplaceAllString(h, "-"), "-")
+	if h == "" {
+		return "quadstack"
+	}
+	return "quadstack-" + h
 }
 
 func newGrants(cfg *Config) *Grants {
