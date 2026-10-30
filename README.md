@@ -4,6 +4,10 @@ A small web UI for **rootless Podman Quadlets**, in the spirit of [Dockge](https
 
 Quadstack runs as a user service of the account that owns the Quadlets. It has no root helper and needs no Podman socket. It only edits the files in `~/.config/containers/systemd` and talks to that user's systemd, so everything it does stays ordinary Quadlet configuration.
 
+![Quadstack stack editor showing sample containers, configuration, unit status and logs](docs/screenshots/stack-editor.png)
+
+*Stack editor with sample data.*
+
 - **Stacks.**
   - Each folder in the Quadlet directory is a stack.
   - At the top level, a `.pod` forms a stack together with the containers that set `Pod=` to it. Every other unit is a stack of its own.
