@@ -30,7 +30,9 @@ function update_script() {
   header_info
   check_container_storage
   check_container_resources
-  QS_MODE=update bash -c "$(curl -fsSL https://raw.githubusercontent.com/denMaier/quadstack/main/deploy/install.sh)"
+  # With someone at the terminal, the installer asks: update or reconfigure
+  if [[ ${PHS_SILENT:-0} == 1 || ! -t 0 ]]; then export QS_MODE=update QS_YES=1; fi
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/denMaier/quadstack/main/deploy/install.sh)"
   exit
 }
 

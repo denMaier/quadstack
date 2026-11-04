@@ -45,8 +45,8 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/denMaier/quadstack/main/
 
 It does different things depending on where it runs:
 
-- **On a Proxmox VE host**, it creates a new LXC. It uses the [community-scripts](https://github.com/community-scripts/core) engine, pinned to a tested commit, with its usual dialogs for resources, storage and network. The container is a Debian 13 LXC, unprivileged and with nesting and keyctl enabled, which rootless Podman needs. Inside it, the installer sets up Podman and an account `quadlets` that owns the Quadlets. Later, `update` in the container installs the latest release.
-- **Anywhere else** (an existing LXC, VM or server with systemd), it installs Quadstack on that machine as an add-on. It lists the accounts that already have a Quadlet directory and lets you choose one or create a new one. Podman is installed with apt if it's missing. Running it again offers **update** or **reconfigure**.
+- **On a Proxmox VE host**, it creates a new LXC. It uses the [community-scripts](https://github.com/community-scripts/core) engine, pinned to a tested commit, with its usual dialogs for resources, storage and network. The container is a Debian 13 LXC, unprivileged and with nesting and keyctl enabled, which rootless Podman needs. Inside it, the installer sets up Podman and an account `quadlets` that owns the Quadlets. Later, `update` in the container offers **update** or **reconfigure**.
+- **Anywhere else** (an existing LXC, VM or server with systemd), it installs Quadstack on that machine as an add-on. It lists the accounts that already have a Quadlet directory and lets you choose one or create a new one. Podman is installed with apt if it's missing. Running it again offers **update** or **reconfigure**. Reconfigure changes the settings and restarts Quadstack; the installed version stays.
 
 It asks for:
 
@@ -57,7 +57,7 @@ It asks for:
 - whether to allow shells into containers;
 - the longest an MCP grant may last.
 
-It shows the redirect URI to register with your provider before asking for the client. The binary is checked against the release's `SHA256SUMS`. When the account is a system account, the installer offers the journal ACL from [Logs of system accounts](#logs-of-system-accounts).
+It shows the redirect URI to register with your provider before asking for the client. An answer it can't use is asked again, with what you typed filled in. A URL without a scheme gets `https://`. The binary is checked against the release's `SHA256SUMS`. When the account is a system account, the installer offers the journal ACL from [Logs of system accounts](#logs-of-system-accounts).
 
 For an unattended run, answer the questions in the environment and set `QS_YES=1` (see the top of [`deploy/install.sh`](deploy/install.sh)):
 
@@ -108,7 +108,7 @@ This lets the account, and so anyone who can sign in to Quadstack, read the whol
 
 ### Update
 
-Run the installer again and choose **update**, or run `update` in an LXC it created. By hand, replace the binary and restart; settings and history stay:
+Run the installer again and choose **update**, or do the same with `update` in an LXC it created. By hand, replace the binary and restart; settings and history stay:
 
 ```sh
 curl -L -o ~/.local/bin/quadstack \

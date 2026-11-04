@@ -46,6 +46,20 @@ ask() {
   printf -v "$var" '%s' "$val"
 }
 
+# ask_valid CHECK VAR "question" [default]: asks again, with the answer filled in, until CHECK
+# accepts VAR. CHECK may tidy VAR, and sets WHY when it refuses. With QS_YES=1 nobody can answer.
+ask_valid() {
+  local check=$1 var=$2 prompt=$3 def=${4:-} why=""
+  while :; do
+    ask "$var" "$why$prompt" "$def"
+    "$check" && return 0
+    [[ ${QS_YES:-} != 1 ]] || die "$WHY"
+    def=${!var}
+    printf -v "$var" '%s' ""
+    why=$WHY$'\n\n'
+  done
+}
+
 ask_secret() {
   local var=$1 prompt=$2 val
   [[ -n "${!var:-}" ]] && return 0
@@ -101,8 +115,13 @@ menu() {
       shift 2
       i=$((i + 1))
     done
-    read -r -p " Choice [1]: " i </dev/tty || cancelled
-    val=${tags[$((${i:-1} - 1))]:-${tags[0]}}
+    while :; do
+      read -r -p " Choice [1]: " i </dev/tty || cancelled
+      i=${i:-1}
+      [[ $i =~ ^[1-9][0-9]*$ ]] && ((i <= ${#tags[@]})) && break
+      echo " Choose a number from 1 to ${#tags[@]}"
+    done
+    val=${tags[i - 1]}
   fi
   printf -v "$var" '%s' "$val"
 }
@@ -230,6 +249,68 @@ install_podlet() {
   fi
 }
 
+# The checks for ask_valid
+# clean_url VALUE: no spaces or trailing slash; https:// when no scheme was typed
+clean_url() {
+  local v=${1//[[:space:]]/}
+  v=${v%/}
+  [[ -z $v || $v == *://* ]] || v=https://$v
+  printf '%s' "$v"
+}
+
+check_public_url() {
+  QS_PUBLIC_URL=$(clean_url "$QS_PUBLIC_URL")
+  [[ $QS_PUBLIC_URL =~ ^https?://[^/]+$ ]] && return 0
+  WHY="The public URL must look like https://quadstack.example.com"
+  return 1
+}
+
+check_issuer() {
+  QS_ISSUER=$(clean_url "$QS_ISSUER")
+  if [[ ! $QS_ISSUER =~ ^https?://[^/]+ ]]; then
+    WHY="The issuer must look like https://id.example.com"
+    return 1
+  fi
+  curl -fsS -o /dev/null --max-time 10 "$QS_ISSUER/.well-known/openid-configuration" && return 0
+  confirm "$QS_ISSUER/.well-known/openid-configuration could not be fetched from here. Continue anyway?" no && return 0
+  WHY="$QS_ISSUER could not be reached. Check the issuer URL."
+  return 1
+}
+
+check_client_id() {
+  QS_CLIENT_ID=${QS_CLIENT_ID//[[:space:]]/}
+  [[ -n $QS_CLIENT_ID ]] && return 0
+  WHY="The client ID is required"
+  return 1
+}
+
+check_account() {
+  [[ $QS_USER =~ ^[a-z_][a-z0-9_-]*$ ]] && return 0
+  WHY="An account name has lowercase letters, digits, - and _, and starts with a letter or _"
+  return 1
+}
+
+check_listen() {
+  QS_LISTEN=${QS_LISTEN//[[:space:]]/}
+  local port=${QS_LISTEN##*:} cur
+  if [[ ! $QS_LISTEN =~ :[1-9][0-9]{0,4}$ ]] || ((port > 65535)); then
+    WHY="The listen address must look like 0.0.0.0:8090"
+    return 1
+  fi
+  cur=$(envget QUADSTACK_LISTEN "$ENVF")
+  [[ $port == "${cur##*:}" ]] && return 0 # Quadstack's own port
+  ss -ltnH "sport = :$port" | grep -q . || return 0
+  WHY="Port $port is already in use; choose another listen address"
+  return 1
+}
+
+check_hours() {
+  QS_MCP_MAX_HOURS=${QS_MCP_MAX_HOURS//[[:space:]]/}
+  [[ $QS_MCP_MAX_HOURS =~ ^[0-9]+([.][0-9]+)?$ ]] && return 0
+  WHY="Hours must be a number, such as 24"
+  return 1
+}
+
 wait_active() {
   local u=$1 i
   for i in $(seq 1 20); do
@@ -266,8 +347,8 @@ if [[ -n $EXISTING ]]; then
     exit 0
   fi
   QS_USER=$EXISTING
-elif [[ ${QS_MODE:-} == update ]]; then
-  # /usr/bin/update in a container the Proxmox script built, before Quadstack was ever set up
+else
+  # Nothing to update or change yet, e.g. /usr/bin/update after an install that did not finish
   QS_MODE=install
 fi
 
@@ -308,10 +389,10 @@ if [[ -z ${QS_USER:-} ]]; then
   else
     CHOICES+=(new "Create a new account for Quadlets")
     menu QS_USER "Which account owns the Quadlets? Quadstack runs as that account and manages its ~/.config/containers/systemd." "${CHOICES[@]}"
-    [[ $QS_USER == new ]] && QS_USER="" && ask QS_USER "Name of the new account" quadlets
+    [[ $QS_USER == new ]] && QS_USER=""
   fi
 fi
-[[ $QS_USER =~ ^[a-z_][a-z0-9_-]*$ ]] || die "Invalid account name: $QS_USER"
+ask_valid check_account QS_USER "Name of the new account" quadlets
 
 if ! id "$QS_USER" >/dev/null 2>&1; then
   msg_info "Creating account $QS_USER"
@@ -356,10 +437,8 @@ fi
 
 ### Settings #################################################################################
 
-if [[ ! -f $ENVF || ${QS_MODE:-} == reconfigure ]]; then
-  ask QS_PUBLIC_URL "The address people will open, behind your reverse proxy with TLS" "$(envget QUADSTACK_PUBLIC_URL "$ENVF")"
-  QS_PUBLIC_URL=${QS_PUBLIC_URL%/}
-  [[ $QS_PUBLIC_URL =~ ^https?://[^/]+$ ]] || die "The public URL must look like https://quadstack.example.com"
+if [[ ! -f $ENVF || $QS_MODE == reconfigure ]] || ! confirm "$ENVF already exists. Keep these settings?"; then
+  ask_valid check_public_url QS_PUBLIC_URL "The address people will open, behind your reverse proxy with TLS" "$(envget QUADSTACK_PUBLIC_URL "$ENVF")"
 
   note "Quadstack signs in with OpenID Connect only (Pocket ID, Authentik, Keycloak, …).
 
@@ -369,32 +448,29 @@ Create a confidential OIDC client in your provider with this redirect URI:
 
 and scopes openid, profile, email and groups. Then enter its details next."
 
-  ask QS_ISSUER "OIDC issuer URL" "$(envget QUADSTACK_OIDC_ISSUER "$ENVF")"
-  QS_ISSUER=${QS_ISSUER%/}
-  if ! curl -fsS -o /dev/null --max-time 10 "$QS_ISSUER/.well-known/openid-configuration"; then
-    confirm "$QS_ISSUER/.well-known/openid-configuration could not be fetched from here. Continue anyway?" no || die "Check the issuer URL"
-  fi
-  ask QS_CLIENT_ID "OIDC client ID" "$(envget QUADSTACK_OIDC_CLIENT_ID "$ENVF")"
+  ask_valid check_issuer QS_ISSUER "OIDC issuer URL" "$(envget QUADSTACK_OIDC_ISSUER "$ENVF")"
+  ask_valid check_client_id QS_CLIENT_ID "OIDC client ID" "$(envget QUADSTACK_OIDC_CLIENT_ID "$ENVF")"
   OLD_SECRET=$(envget QUADSTACK_OIDC_CLIENT_SECRET "$ENVF")
   if [[ -n $OLD_SECRET && -z ${QS_CLIENT_SECRET:-} ]] && confirm "Keep the current client secret?"; then
     QS_CLIENT_SECRET=$OLD_SECRET
   fi
   ask_secret QS_CLIENT_SECRET "OIDC client secret (empty for a public client)"
 
-  ask QS_ALLOWED_GROUPS "Groups allowed to sign in, comma separated (empty for none)" "$(envget QUADSTACK_ALLOWED_GROUPS "$ENVF" admin)"
-  ask QS_ALLOWED_USERS "Users allowed to sign in: sub, email or username, comma separated (empty for none)" "$(envget QUADSTACK_ALLOWED_USERS "$ENVF")"
-  [[ -n $QS_ALLOWED_GROUPS || -n $QS_ALLOWED_USERS ]] || die "Allow at least one group or user; Quadstack refuses to start otherwise"
+  while :; do
+    ask QS_ALLOWED_GROUPS "Groups allowed to sign in, comma separated (empty for none)" "$(envget QUADSTACK_ALLOWED_GROUPS "$ENVF" admin)"
+    ask QS_ALLOWED_USERS "Users allowed to sign in: sub, email or username, comma separated (empty for none)" "$(envget QUADSTACK_ALLOWED_USERS "$ENVF")"
+    [[ -n ${QS_ALLOWED_GROUPS//[[:space:],]/}${QS_ALLOWED_USERS//[[:space:],]/} ]] && break
+    [[ ${QS_YES:-} != 1 ]] || die "Allow at least one group or user; Quadstack refuses to start otherwise"
+    note "Allow at least one group or user; Quadstack refuses to start otherwise."
+    QS_ALLOWED_GROUPS="" QS_ALLOWED_USERS=""
+  done
 
-  ask QS_LISTEN "Listen address for the reverse proxy to reach" "$(envget QUADSTACK_LISTEN "$ENVF" 0.0.0.0:8090)"
-  if [[ ! -f $ENVF ]] && ss -ltnH "sport = :${QS_LISTEN##*:}" | grep -q .; then
-    die "Port ${QS_LISTEN##*:} is already in use; choose another listen address"
-  fi
+  ask_valid check_listen QS_LISTEN "Listen address for the reverse proxy to reach" "$(envget QUADSTACK_LISTEN "$ENVF" 0.0.0.0:8090)"
 
   if [[ -z ${QS_TERMINAL:-} ]]; then
     if confirm "Allow shells into containers from the browser (and the MCP exec tool)?" "$([[ $(envget QUADSTACK_TERMINAL "$ENVF") == false ]] && echo no || echo yes)"; then QS_TERMINAL=true; else QS_TERMINAL=false; fi
   fi
-  ask QS_MCP_MAX_HOURS "AI access (MCP) is off until you create a grant in the UI. Longest a grant may last, in hours (0 turns MCP off)" "$(envget QUADSTACK_MCP_MAX_HOURS "$ENVF" 24)"
-  [[ $QS_MCP_MAX_HOURS =~ ^[0-9]+([.][0-9]+)?$ ]] || die "Hours must be a number"
+  ask_valid check_hours QS_MCP_MAX_HOURS "AI access (MCP) is off until you create a grant in the UI. Longest a grant may last, in hours (0 turns MCP off)" "$(envget QUADSTACK_MCP_MAX_HOURS "$ENVF" 24)"
 
   userdir "$QS_USER" 0700 "$HOMEDIR/.config/quadstack"
   tmp=$(mktemp)
@@ -419,16 +495,20 @@ fi
 
 ### Binary and service #######################################################################
 
-TAG=$(resolve_version)
-install_binary "$QS_USER" "$TAG"
-install_podlet || msg_warn "podlet could not be installed; Import stays off"
+if [[ $QS_MODE == reconfigure ]]; then
+  TAG=$CUR # only the settings change
+else
+  TAG=$(resolve_version)
+  install_binary "$QS_USER" "$TAG"
+  install_podlet || msg_warn "podlet could not be installed; Import stays off"
 
-UNIT=$HOMEDIR/.config/systemd/user/quadstack.service
-userdir "$QS_USER" 0755 "$HOMEDIR/.config/systemd/user"
-tmp=$(mktemp)
-curl -fsSL -o "$tmp" "https://raw.githubusercontent.com/$REPO/$TAG/deploy/quadstack.service"
-install -o "$QS_USER" -g "$(id -gn "$QS_USER")" -m 0644 "$tmp" "$UNIT"
-rm -f "$tmp"
+  UNIT=$HOMEDIR/.config/systemd/user/quadstack.service
+  userdir "$QS_USER" 0755 "$HOMEDIR/.config/systemd/user"
+  tmp=$(mktemp)
+  curl -fsSL -o "$tmp" "https://raw.githubusercontent.com/$REPO/$TAG/deploy/quadstack.service"
+  install -o "$QS_USER" -g "$(id -gn "$QS_USER")" -m 0644 "$tmp" "$UNIT"
+  rm -f "$tmp"
+fi
 
 msg_info "Starting Quadstack"
 as_user "$QS_USER" systemctl --user daemon-reload
@@ -450,7 +530,7 @@ cat <<EOF
   2. Open $(envget QUADSTACK_PUBLIC_URL "$ENVF") and sign in.
   3. Quadlets go in $HOMEDIR/.config/containers/systemd, or create stacks in the UI.
 
-  Update later by running this installer again$([[ -x /usr/bin/update ]] && echo ", or with: update").
+  Update or change the settings by running this installer again$([[ -x /usr/bin/update ]] && echo ", or with: update").
   Settings: $ENVF
   Service:  as $QS_USER, systemctl --user status quadstack / journalctl --user -u quadstack
 EOF
