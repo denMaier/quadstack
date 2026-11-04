@@ -163,6 +163,17 @@ userdir() {
   chmod "$mode" "$@"
 }
 
+# shell_env USER: the account's shells find its systemd user session, which sudo -iu and su
+# from a logged-in shell don't set up. Written as the account, so its dotfiles stay its own.
+shell_env() {
+  local u=$1 home f line='export XDG_RUNTIME_DIR=/run/user/$(id -u)'
+  home=$(user_home "$u")
+  for f in .bash_profile .profile .bashrc; do
+    [[ $f != .bash_profile || -f $home/$f ]] || continue
+    runuser -u "$u" -- sh -c 'grep -qsFx "$1" "$2" || printf "%s\n" "$1" >>"$2"' sh "$line" "$home/$f" || return 1
+  done
+}
+
 # envget KEY FILE [DEFAULT]: a value from an env file, without quotes
 envget() {
   local v=""
@@ -318,7 +329,7 @@ wait_active() {
     sleep 1
   done
   as_user "$u" systemctl --user --no-pager status quadstack.service | tail -n 15 || true
-  die "Quadstack did not start; see: journalctl --user -u quadstack (as $u)"
+  die "Quadstack did not start; see: journalctl _SYSTEMD_USER_UNIT=quadstack.service"
 }
 
 # An existing install: the account whose user unit is quadstack.service
@@ -340,6 +351,7 @@ if [[ -n $EXISTING ]]; then
     TAG=$(resolve_version)
     install_binary "$EXISTING" "$TAG"
     install_podlet || msg_warn "podlet could not be installed; Import stays off"
+    shell_env "$EXISTING" || msg_warn "Could not set up the shell profile of $EXISTING"
     msg_info "Restarting Quadstack"
     as_user "$EXISTING" systemctl --user restart quadstack.service
     wait_active "$EXISTING"
@@ -421,6 +433,7 @@ loginctl enable-linger "$QS_USER"
 for _ in $(seq 1 20); do [[ -S /run/user/$UIDN/bus ]] && break; sleep 1; done
 [[ -S /run/user/$UIDN/bus ]] || die "The systemd user session of $QS_USER did not start (is dbus-user-session installed?)"
 msg_ok "Lingering enabled: $QS_USER's units run without a login"
+shell_env "$QS_USER" || msg_warn "Could not set up the shell profile of $QS_USER"
 
 if ((UIDN < 1000)) && [[ ! -f /etc/tmpfiles.d/quadstack-journal.conf ]]; then
   if [[ ${QS_JOURNAL_ACL:-} == 1 ]] || { [[ -z ${QS_JOURNAL_ACL:-} ]] && confirm "$QS_USER is a system account (UID $UIDN), so its logs are in the system journal, which it cannot read.
@@ -532,5 +545,6 @@ cat <<EOF
 
   Update or change the settings by running this installer again$([[ -x /usr/bin/update ]] && echo ", or with: update").
   Settings: $ENVF
-  Service:  as $QS_USER, systemctl --user status quadstack / journalctl --user -u quadstack
+  Service:  systemctl --user --machine=$QS_USER@ status quadstack
+  Logs:     journalctl _SYSTEMD_USER_UNIT=quadstack.service
 EOF

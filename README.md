@@ -57,7 +57,7 @@ It asks for:
 - whether to allow shells into containers;
 - the longest an MCP grant may last.
 
-It shows the redirect URI to register with your provider before asking for the client. An answer it can't use is asked again, with what you typed filled in. A URL without a scheme gets `https://`. The binary is checked against the release's `SHA256SUMS`. When the account is a system account, the installer offers the journal ACL from [Logs of system accounts](#logs-of-system-accounts).
+It shows the redirect URI to register with your provider before asking for the client. An answer it can't use is asked again, with what you typed filled in. A URL without a scheme gets `https://`. It also sets `XDG_RUNTIME_DIR` in the account's shell profile, so `systemctl --user` works after `sudo -iu <user>` or `su <user>`. The binary is checked against the release's `SHA256SUMS`. When the account is a system account, the installer offers the journal ACL from [Logs of system accounts](#logs-of-system-accounts).
 
 For an unattended run, answer the questions in the environment and set `QS_YES=1` (see the top of [`deploy/install.sh`](deploy/install.sh)):
 
