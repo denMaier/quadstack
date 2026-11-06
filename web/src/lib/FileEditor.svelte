@@ -4,6 +4,7 @@
   import Editor from './Editor.svelte'
   import HistoryDialog from './HistoryDialog.svelte'
   import SecretHelperDialog from './SecretHelperDialog.svelte'
+  import { activity, isActive } from './operations.svelte'
 
   let {
     path,
@@ -17,6 +18,7 @@
   let saved = $state('')
   let loading = $state(true)
   let busy = $state(false)
+  let working = $state('')
   let error = $state('')
   let notice = $state('')
   let validation = $state<Validation>()
@@ -25,6 +27,7 @@
   let secretsOpen = $state(false)
 
   const dirty = $derived(content !== saved)
+  const applying = $derived(activity.items.some((operation) => isActive(operation) && operation.label === 'Apply ' + path))
 
   onMount(async () => {
     try {
@@ -38,7 +41,9 @@
   })
 
   async function validate() {
+    if (busy || applying) return
     busy = true
+    working = 'Checking with the Quadlet generator…'
     error = notice = ''
     try {
       validation = await api.validate(path, content)
@@ -50,16 +55,19 @@
   }
 
   async function save(apply: Apply, force = false) {
+    if ((busy && !force) || applying || loading) return
     busy = true
+    working = 'Saving' + (apply ? ' and queuing ' + apply : '') + '…'
     error = notice = ''
+    const submitted = content
     try {
-      const r = await api.saveFile(path, content, apply, force)
-      saved = content
+      const r = await api.saveFile(path, submitted, apply, force)
+      saved = submitted
       validation = r.validation
       notice = r.applyError
         ? ''
-        : { '': 'Saved. Reload systemd to apply.', reload: 'Saved and reloaded.', restart: 'Saved, reloaded and restarted.' }[apply]
-      if (r.applyError) error = 'Saved, but applying failed: ' + r.applyError
+        : r.operation ? 'Saved. Applying is queued; see Activity for progress and the result.' : 'Saved. Reload systemd to apply.'
+      if (r.applyError) error = r.applyError
       await onchanged()
     } catch (e: any) {
       if (e instanceof ApiError && e.status === 422) {
@@ -74,27 +82,36 @@
   }
 
   async function remove() {
+    if (busy || applying) return
     const stop = !!file?.unit && confirm(`Stop ${file.unit} before deleting? (Cancel deletes without stopping.)`)
     if (!confirm(`Delete ${path}? A copy stays in the history.`)) return
     busy = true
+    working = 'Deleting (see Activity)…'
     try {
       await api.deleteFile(path, stop)
       ondeleted()
     } catch (e: any) {
       error = e.message
+      if (e.body?.operation?.steps.some((step: { name: string; state: string }) => step.name === 'Delete ' + path && step.state === 'succeeded')) ondeleted()
     } finally {
       busy = false
     }
   }
 
   async function move() {
+    if (busy || applying) return
     const to = prompt('Move or rename to (relative to the Quadlet directory):', path)?.trim()
     if (!to || to === path) return
+    busy = true
+    working = 'Moving…'
     try {
-      await api.moveFile(path, to)
+      const result = await api.moveFile(path, to)
+      if (result.applyError) activity.warning = result.applyError
       onmoved(to)
     } catch (e: any) {
       error = e.message
+    } finally {
+      busy = false
     }
   }
 
@@ -115,8 +132,8 @@
     {#if file?.kind === 'container'}
       <button disabled={busy || loading} onclick={() => (secretsOpen = true)} title="Move values into Podman secrets">Secrets</button>
     {/if}
-    <button class="ghost" disabled={busy} onclick={move} title="Move or rename">⇄</button>
-    <button class="ghost danger" disabled={busy} onclick={remove} title="Delete">🗑</button>
+    <button class="ghost" disabled={busy || applying} onclick={move} title="Move or rename">⇄</button>
+    <button class="ghost danger" disabled={busy || applying} onclick={remove} title="Delete">🗑</button>
   </div>
 
   {#if loading}
@@ -128,10 +145,10 @@
   {/if}
 
   <div class="bar row wrap">
-    <button disabled={busy || !dirty} onclick={() => save('')}>Save</button>
-    <button disabled={busy || !dirty} onclick={() => save('reload')} title="Save and daemon-reload (⌘S)">Save &amp; reload</button>
+    <button disabled={busy || applying || !dirty} onclick={() => save('')}>Save</button>
+    <button disabled={busy || applying || !dirty} onclick={() => save('reload')} title="Save and daemon-reload (⌘S)">Save &amp; reload</button>
     {#if file?.unit && ['container', 'pod', 'kube'].includes(file.kind)}
-      <button class="primary" disabled={busy} onclick={() => save('restart')} title="Save, daemon-reload and restart {file.unit}">Deploy</button>
+      <button class="primary" disabled={busy || applying} onclick={() => save('restart')} title="Save, daemon-reload and restart {file.unit}">Deploy</button>
     {/if}
     <span class="grow"></span>
     {#if validation?.generated}
@@ -139,6 +156,7 @@
     {/if}
   </div>
 
+  {#if busy}<p class="muted" role="status">{working}</p>{/if}
   {#if error}<div class="error-box">{error}</div>{/if}
   {#if validation && !validation.ok}
     <div class="error-box">{validation.output}</div>

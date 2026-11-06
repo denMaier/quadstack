@@ -35,6 +35,7 @@ func main() {
 		auth:    &Authenticator{cfg: cfg},
 		files:   &Files{cfg: cfg},
 		systemd: &Systemd{},
+		podman:  newPodman(cfg.PodmanSocket),
 		static:  static,
 		grants:  newGrants(cfg),
 		audit:   newAudit(cfg),

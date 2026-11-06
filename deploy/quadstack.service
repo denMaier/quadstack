@@ -5,7 +5,8 @@
 # No sandboxing options: rootless Podman needs the setuid newuidmap/newgidmap helpers.
 [Unit]
 Description=Quadstack, a web UI for rootless Quadlets
-After=network-online.target
+After=network-online.target podman.socket
+Requires=podman.socket
 
 [Service]
 ExecStart=%h/.local/bin/quadstack

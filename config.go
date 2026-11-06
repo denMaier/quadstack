@@ -29,11 +29,12 @@ type Config struct {
 	AllowedUsers  []string // matched against sub, email and preferred_username
 	AllowedGroups []string
 
-	QuadletDir string // the rootless Quadlet search path, ~/.config/containers/systemd
-	StateDir   string // edit history and the session secret
-	QuadletBin string // Podman's quadlet generator, used for validation
-	PodletBin  string // optional, enables importing docker run / compose
-	Terminal   bool   // allow `podman exec` shells from the browser, and the MCP exec tool
+	QuadletDir   string // the rootless Quadlet search path, ~/.config/containers/systemd
+	StateDir     string // edit history and the session secret
+	QuadletBin   string // Podman's quadlet generator, used for validation
+	PodletBin    string // optional, enables importing docker run / compose
+	PodmanSocket string
+	Terminal     bool // allow `podman exec` shells from the browser, and the MCP exec tool
 
 	// The longest an MCP grant may last; 0 turns MCP access off entirely
 	MCPMaxTTL time.Duration
@@ -82,6 +83,10 @@ func findQuadlet() string {
 	return ""
 }
 
+func defaultPodmanSocket() string {
+	return filepath.Join(env("XDG_RUNTIME_DIR", filepath.Join("/run/user", strconv.Itoa(os.Getuid()))), "podman", "podman.sock")
+}
+
 func LoadConfig() (*Config, error) {
 	c := &Config{
 		Listen:        env("QUADSTACK_LISTEN", "127.0.0.1:8090"),
@@ -97,7 +102,11 @@ func LoadConfig() (*Config, error) {
 		StateDir:      env("QUADSTACK_STATE_DIR", filepath.Join(xdg("XDG_STATE_HOME", ".local/state"), "quadstack")),
 		QuadletBin:    env("QUADSTACK_QUADLET_BIN", findQuadlet()),
 		PodletBin:     env("QUADSTACK_PODLET_BIN", ""),
+		PodmanSocket:  env("QUADSTACK_PODMAN_SOCKET", defaultPodmanSocket()),
 		Terminal:      env("QUADSTACK_TERMINAL", "true") == "true",
+	}
+	if !filepath.IsAbs(c.PodmanSocket) || strings.Contains(c.PodmanSocket, "://") {
+		return nil, errors.New("QUADSTACK_PODMAN_SOCKET must be an absolute local Unix socket path; TCP endpoints are not supported")
 	}
 	hours, err := strconv.ParseFloat(env("QUADSTACK_MCP_MAX_HOURS", "24"), 64)
 	if err != nil || hours < 0 {

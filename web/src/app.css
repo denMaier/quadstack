@@ -166,6 +166,7 @@ code,
 }
 
 .dot.partial,
+.dot.unknown,
 .dot.busy {
   background: var(--warn);
 }

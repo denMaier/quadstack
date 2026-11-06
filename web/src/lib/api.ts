@@ -1,3 +1,5 @@
+import { activity, rememberOperation } from './operations.svelte'
+
 export type UnitState = { load: string; active: string; sub: string }
 
 export type QFile = {
@@ -51,7 +53,31 @@ export type Stack = {
   files: QFile[]
   units: Record<string, UnitState>
   containers: Container[]
-  state: 'running' | 'partial' | 'stopped' | 'failed' | 'empty'
+  state: 'running' | 'partial' | 'stopped' | 'failed' | 'empty' | 'busy' | 'unknown'
+}
+
+export type OperationStep = {
+  name: string
+  unit?: string
+  state: string
+  detail?: string
+  error?: string
+  started?: string
+  finished?: string
+}
+
+export type Operation = {
+  id: string
+  label: string
+  stack?: string
+  state: string
+  created: string
+  revision: number
+  deadline: string
+  started?: string
+  finished?: string
+  error?: string
+  steps: OperationStep[]
 }
 
 export type Me = {
@@ -102,11 +128,18 @@ export class ApiError extends Error {
 }
 
 async function call<T>(method: string, url: string, body?: unknown): Promise<T> {
-  const res = await fetch(url, {
-    method,
-    headers: body === undefined ? { 'X-Quadstack': '1' } : { 'X-Quadstack': '1', 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
+  let res: Response
+  try {
+    res = await fetch(url, {
+      method,
+      headers: body === undefined ? { 'X-Quadstack': '1' } : { 'X-Quadstack': '1', 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: AbortSignal.timeout(url.startsWith('/api/operations') ? 5000 : 30000),
+    })
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+    throw new ApiError(`${reason}.${method === 'GET' ? '' : ' The request may already have been accepted. Check Activity before retrying.'}`, 0, null)
+  }
   if (res.status === 401) {
     location.href = '/auth/login?next=' + encodeURIComponent(location.pathname + location.hash)
     throw new ApiError('Signed out', 401, null)
@@ -114,7 +147,23 @@ async function call<T>(method: string, url: string, body?: unknown): Promise<T> 
   const data = await res.json().catch(() => undefined)
   if (!res.ok) throw new ApiError(data?.error ?? res.statusText, res.status, data)
   if (data === undefined) throw new ApiError(`Unexpected response from ${method} ${url}`, res.status, null)
+  if (data.operation) rememberOperation(data.operation)
   return data as T
+}
+
+async function tracked(method: string, url: string, body?: unknown): Promise<Operation> {
+  let { operation } = await call<{ operation: Operation }>(method, url, body)
+  while (operation.state === 'queued' || operation.state === 'running') {
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+    try {
+      operation = await call<Operation>('GET', '/api/operations/' + operation.id)
+      rememberOperation(operation)
+    } catch (error) {
+      throw new ApiError(`Could not confirm the action's outcome. It may still be running; check Activity before retrying. ${error instanceof Error ? error.message : error}`, 0, { operation })
+    }
+  }
+  if (operation.state !== 'succeeded') throw new ApiError(operation.error || `Action ${operation.state}`, 502, { operation })
+  return operation
 }
 
 const q = (params: Record<string, string>) => new URLSearchParams(params).toString()
@@ -123,27 +172,33 @@ export type Apply = '' | 'reload' | 'restart'
 
 export const api = {
   me: () => call<Me>('GET', '/api/me'),
+  operations: () => call<Operation[]>('GET', '/api/operations'),
   stacks: () => call<{ stacks: Stack[]; resources: Resource[]; warnings: string[] | null }>('GET', '/api/stacks'),
   createStack: (name: string) => call<{ id: string }>('POST', '/api/stacks', { name }),
   removeStack: (id: string) => call('DELETE', '/api/stacks/' + id),
-  stackAction: (stack: string, action: string) => call('POST', '/api/stack-action', { stack, action }),
-  unitAction: (unit: string, action: string) => call('POST', '/api/unit-action', { unit, action }),
-  reload: () => call('POST', '/api/reload'),
+  stackAction: (stack: string, action: string) => tracked('POST', '/api/stack-action', { stack, action }),
+  unitAction: (unit: string, action: string) => tracked('POST', '/api/unit-action', { unit, action }),
+  reload: () => tracked('POST', '/api/reload'),
+  pull: (stack: string) => tracked('POST', '/api/pull', { stack }),
   readFile: (path: string) => call<{ content: string }>('GET', '/api/file?' + q({ path })),
   saveFile: (path: string, content: string, apply: Apply, force = false) =>
-    call<{ validation: Validation; applyError?: string }>('PUT', '/api/file', { path, content, apply, force }),
-  createFile: (path: string, content: string) => call('POST', '/api/file', { path, content, apply: 'reload' }),
-  deleteFile: (path: string, stop: boolean) => call('DELETE', '/api/file?' + q({ path, stop: stop ? '1' : '0' })),
-  moveFile: (from: string, to: string) => call('POST', '/api/file/move', { from, to }),
+    call<{ validation: Validation; applyError?: string; operation?: Operation }>('PUT', '/api/file', { path, content, apply, force }),
+  createFile: async (path: string, content: string) => {
+    const result = await call<{ applyError?: string }>('POST', '/api/file', { path, content, apply: 'reload' })
+    if (result.applyError) activity.warning = result.applyError
+    return result
+  },
+  deleteFile: (path: string, stop: boolean) => tracked('DELETE', '/api/file?' + q({ path, stop: stop ? '1' : '0' })),
+  moveFile: (from: string, to: string) => call<{ applyError?: string }>('POST', '/api/file/move', { from, to }),
   validate: (path: string, content: string) => call<Validation>('POST', '/api/validate', { path, content }),
   history: (path: string) => call<Version[]>('GET', '/api/history?' + q({ path })),
   version: (path: string, id: string) => call<{ content: string }>('GET', '/api/history/version?' + q({ path, id })),
   images: () => call<Image[]>('GET', '/api/images'),
-  prune: (all: boolean) => call<{ output: string }>('POST', '/api/images/prune', { all }),
+  prune: async (all: boolean) => ({ output: (await tracked('POST', '/api/images/prune', { all })).steps[0]?.detail ?? '' }),
   podmanResources: () => call<{ networks: PodmanNetwork[] | null; volumes: PodmanVolume[] | null }>('GET', '/api/podman-resources'),
   secrets: () => call<SecretInfo[]>('GET', '/api/secrets'),
-  setSecret: (s: { name: string; value?: string; fromFile?: string; replace?: boolean }) => call('POST', '/api/secrets', s),
-  removeSecret: (name: string, force = false) => call('DELETE', '/api/secrets?' + q({ name, force: force ? '1' : '0' })),
+  setSecret: (s: { name: string; value?: string; fromFile?: string; replace?: boolean }) => tracked('POST', '/api/secrets', s),
+  removeSecret: (name: string, force = false) => tracked('DELETE', '/api/secrets?' + q({ name, force: force ? '1' : '0' })),
   mcp: () => call<McpInfo>('GET', '/api/mcp'),
   createGrant: (g: { label: string; minutes: number; rules: Rules }) => call<{ grant: Grant; token: string }>('POST', '/api/mcp/grants', g),
   updateGrant: (id: string, g: { label: string; minutes: number; rules: Rules }) => call<Grant>('PUT', '/api/mcp/grants/' + id, g),

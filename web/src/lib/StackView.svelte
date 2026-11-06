@@ -1,10 +1,12 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte'
   import { api, wsURL, type Me, type Stack } from './api'
   import { unitBadge } from './quadlet'
   import FileEditor from './FileEditor.svelte'
   import NewFileDialog from './NewFileDialog.svelte'
   import Terminal from './Terminal.svelte'
   import { catalog } from './catalog.svelte'
+  import { activity, isActive } from './operations.svelte'
 
   let { stack, me, refresh }: { stack: Stack; me?: Me; refresh: () => Promise<void> } = $props()
 
@@ -13,12 +15,15 @@
   let file = $state('')
   let newFileOpen = $state(false)
   let reconnect = $state(0)
+  let mounted = true
+  onDestroy(() => (mounted = false))
   // What the terminal panel shows: the stack's logs, one unit's logs, an image pull or a shell
-  let panel = $state<{ kind: 'logs' | 'pull' | 'exec'; title: string; url: string; interactive?: boolean }>()
+  let panel = $state<{ kind: 'logs' | 'exec'; title: string; url: string; interactive?: boolean }>()
 
   const wiring = $derived(stack.files.filter((f) => f.networks?.length || f.mounts?.length || f.secrets?.length))
   const isResource = (n: string) => catalog.resources.some((r) => r.file.path.split('/').pop() === n || r.file.name === n)
   const units = $derived(stack.files.filter((f) => f.unit && ['container', 'pod', 'kube'].includes(f.kind)).map((f) => f.unit!))
+  const actionBusy = $derived(!!busy || activity.items.some((operation) => isActive(operation) && (operation.stack === stack.id || operation.steps.some((step) => step.unit && units.includes(step.unit)))))
 
   // Reset the view when switching stacks
   let shownStack = ''
@@ -35,6 +40,7 @@
   }
 
   async function run(label: string, fn: () => Promise<unknown>) {
+    if (busy) return
     busy = label
     error = ''
     try {
@@ -48,15 +54,12 @@
   }
 
   const stackAction = (action: string) => run(action, () => api.stackAction(stack.id, action))
-  const unitAction = (unit: string, action: string) => run(unit + action, () => api.unitAction(unit, action))
+  const unitAction = (unit: string, action: string) => run(action + ' ' + unit, () => api.unitAction(unit, action))
 
-  function update() {
-    panel = { kind: 'pull', title: 'Pulling images', url: wsURL('/ws/pull', { stack: stack.id }) }
-  }
-
-  async function afterPull(code: number) {
-    if (panel?.kind !== 'pull' || code !== 0) return
-    if (confirm('Images pulled. Restart the stack to use them?')) {
+  async function update() {
+    await run('Pulling images (see Activity)', () => api.pull(stack.id))
+    if (error || !mounted) return
+    if (confirm(`Images pulled for ${stack.name}. Restart the stack to use them?`)) {
       await stackAction('restart')
       stackLogs()
     }
@@ -81,10 +84,10 @@
     <span class="badge"><span class={'dot ' + stack.state}></span>{stack.state}</span>
     {#if stack.id.startsWith('d/')}<span class="badge" title="Files live in this folder">folder</span>{/if}
     <span class="grow"></span>
-    <button class="primary" disabled={!!busy || !units.length} onclick={() => stackAction('start')}>▶ Start</button>
-    <button disabled={!!busy || !units.length} onclick={() => stackAction('restart')}>↻ Restart</button>
-    <button disabled={!!busy || !units.length} onclick={() => stackAction('stop')}>■ Stop</button>
-    <button disabled={!!busy || !stack.files.some((f) => f.image)} onclick={update} title="Pull newer images">⤓ Update</button>
+    <button class="primary" disabled={actionBusy || !units.length} onclick={() => stackAction('start')}>▶ Start</button>
+    <button disabled={actionBusy || !units.length} onclick={() => stackAction('restart')}>↻ Restart</button>
+    <button disabled={actionBusy || !units.length} onclick={() => stackAction('stop')}>■ Stop</button>
+    <button disabled={actionBusy || !stack.files.some((f) => f.image)} onclick={update} title="Pull newer images">⤓ Update</button>
     {#if stack.id.startsWith('d/') && stack.files.length === 0}
       <button class="danger" onclick={removeStack}>Remove</button>
     {/if}
@@ -144,10 +147,10 @@
                 <td class="mono small">{cname ?? ''}</td>
                 <td class="actions">
                   {#if st?.active === 'active'}
-                    <button class="ghost" title="Restart" disabled={!!busy} onclick={() => unitAction(f.unit!, 'restart')}>↻</button>
-                    <button class="ghost" title="Stop" disabled={!!busy} onclick={() => unitAction(f.unit!, 'stop')}>■</button>
+                    <button class="ghost" title="Restart" disabled={actionBusy} onclick={() => unitAction(f.unit!, 'restart')}>↻</button>
+                    <button class="ghost" title="Stop" disabled={actionBusy} onclick={() => unitAction(f.unit!, 'stop')}>■</button>
                   {:else}
-                    <button class="ghost" title="Start" disabled={!!busy} onclick={() => unitAction(f.unit!, 'start')}>▶</button>
+                    <button class="ghost" title="Start" disabled={actionBusy} onclick={() => unitAction(f.unit!, 'start')}>▶</button>
                   {/if}
                   <button class="ghost" title="Logs" onclick={() => (panel = { kind: 'logs', title: 'Logs: ' + f.unit, url: wsURL('/ws/logs', { unit: f.unit! }) })}>☰</button>
                   {#if me?.terminal && cname && st?.active === 'active' && f.kind === 'container'}
@@ -205,7 +208,7 @@
         </div>
         <div class="term-wrap">
           {#key reconnect}
-            <Terminal url={panel.url} interactive={panel.interactive} onexit={afterPull} />
+            <Terminal url={panel.url} interactive={panel.interactive} />
           {/key}
         </div>
       {/if}

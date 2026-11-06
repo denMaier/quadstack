@@ -14,6 +14,8 @@
   let term: Terminal
   let fit: FitAddon
   let ws: WebSocket | undefined
+  let ready = $state(false)
+  let status = $state('Connecting…')
 
   const dark = window.matchMedia('(prefers-color-scheme: dark)')
   const themes = {
@@ -24,22 +26,40 @@
   function connect(u: string) {
     ws?.close()
     term.reset()
+    status = 'Connecting…'
     const sock = new WebSocket(u)
+    let finished = false
     sock.binaryType = 'arraybuffer'
-    sock.onopen = () => sock.send(JSON.stringify({ cols: term.cols, rows: term.rows }))
+    sock.onopen = () => {
+      status = interactive ? 'Connected to container terminal' : 'Following journal logs'
+      sock.send(JSON.stringify({ cols: term.cols, rows: term.rows }))
+    }
     sock.onmessage = (e) => {
+      if (ws !== sock) return
       if (typeof e.data === 'string') {
         const msg = JSON.parse(e.data)
-        if (msg.error) term.writeln(`\r\n\x1b[31m${msg.error}\x1b[0m`)
+        if (msg.error) {
+          status = 'Failed: ' + msg.error
+          term.writeln(`\r\n\x1b[31m${msg.error}\x1b[0m`)
+        }
+        if (msg.exit !== undefined) {
+          finished = true
+          status = msg.error ? status : `Exited with ${msg.exit}`
+        }
         if (msg.exit !== undefined && msg.exit !== 0) term.writeln(`\r\n\x1b[2m[exited with ${msg.exit}]\x1b[0m`)
-        onexit?.(msg.exit)
+        if (msg.exit !== undefined) onexit?.(msg.exit)
         return
       }
       term.write(new Uint8Array(e.data))
     }
     sock.onclose = (e) => {
-      if (e.code !== 1000 && ws === sock) term.writeln('\r\n\x1b[2m[connection closed]\x1b[0m')
+      if (ws !== sock || finished) return
+      if (e.code !== 1000) {
+        status = 'Connection lost. Use Reconnect to resume; do not assume the command stopped.'
+        term.writeln('\r\n\x1b[2m[connection closed]\x1b[0m')
+      }
     }
+    sock.onerror = () => (status = 'Could not connect. Check sign-in, API availability, and proxy WebSocket support.')
     ws = sock
   }
 
@@ -64,24 +84,32 @@
     const onTheme = () => (term.options.theme = dark.matches ? themes.dark : themes.light)
     dark.addEventListener('change', onTheme)
     if (interactive) term.focus()
+    ready = true
     return () => {
       ro.disconnect()
       dark.removeEventListener('change', onTheme)
-      ws?.close()
+      const socket = ws
+      ws = undefined
+      socket?.close()
       term.dispose()
     }
   })
 
   $effect(() => {
-    if (term && url) connect(url)
+    if (ready && url) connect(url)
   })
 </script>
 
+<div class="connection muted" role="status">{status}</div>
 <div class="term" bind:this={host}></div>
 
 <style>
+  .connection {
+    font-size: 12px;
+    margin-bottom: 4px;
+  }
   .term {
-    height: 100%;
+    height: calc(100% - 22px);
     min-height: 0;
     padding: 6px 8px;
     background: var(--term-bg);

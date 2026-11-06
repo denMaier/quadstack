@@ -212,6 +212,17 @@ install_binary() {
   msg_ok "Installed $("$home/.local/bin/quadstack" -version) to $home/.local/bin/quadstack"
 }
 
+install_service() {
+  local account=$1 tag=$2 home tmp
+  home=$(user_home "$account")
+  msg_info "Installing Quadstack service for $tag"
+  tmp=$(mktemp)
+  curl -fsSL -o "$tmp" "https://raw.githubusercontent.com/$REPO/$tag/deploy/quadstack.service"
+  userdir "$account" 0755 "$home/.config/systemd/user"
+  install -o "$account" -g "$(id -gn "$account")" -m 0644 "$tmp" "$home/.config/systemd/user/quadstack.service"
+  rm -f "$tmp"
+}
+
 # podlet turns docker run commands and compose files into Quadlets (Import). It is optional:
 # asked for, no by default, and kept up to date once this installer put it in /usr/local/bin.
 # It never fails the install.
@@ -350,9 +361,12 @@ if [[ -n $EXISTING ]]; then
   if [[ $QS_MODE == update ]]; then
     TAG=$(resolve_version)
     install_binary "$EXISTING" "$TAG"
+    install_service "$EXISTING" "$TAG"
     install_podlet || msg_warn "podlet could not be installed; Import stays off"
     shell_env "$EXISTING" || msg_warn "Could not set up the shell profile of $EXISTING"
     msg_info "Restarting Quadstack"
+    as_user "$EXISTING" systemctl --user daemon-reload
+    as_user "$EXISTING" systemctl --user enable --now --quiet podman.socket
     as_user "$EXISTING" systemctl --user restart quadstack.service
     wait_active "$EXISTING"
     msg_ok "Quadstack $TAG is running"
@@ -515,16 +529,12 @@ else
   install_binary "$QS_USER" "$TAG"
   install_podlet || msg_warn "podlet could not be installed; Import stays off"
 
-  UNIT=$HOMEDIR/.config/systemd/user/quadstack.service
-  userdir "$QS_USER" 0755 "$HOMEDIR/.config/systemd/user"
-  tmp=$(mktemp)
-  curl -fsSL -o "$tmp" "https://raw.githubusercontent.com/$REPO/$TAG/deploy/quadstack.service"
-  install -o "$QS_USER" -g "$(id -gn "$QS_USER")" -m 0644 "$tmp" "$UNIT"
-  rm -f "$tmp"
+  install_service "$QS_USER" "$TAG"
 fi
 
 msg_info "Starting Quadstack"
 as_user "$QS_USER" systemctl --user daemon-reload
+as_user "$QS_USER" systemctl --user enable --now --quiet podman.socket
 as_user "$QS_USER" systemctl --user enable --quiet quadstack.service
 as_user "$QS_USER" systemctl --user restart quadstack.service
 wait_active "$QS_USER"

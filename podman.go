@@ -6,38 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os/exec"
 	"regexp"
 	"strings"
 	"time"
 )
-
-// Podman calls are made through the CLI's JSON output, which is stable across versions
-// and needs no API socket.
-
-func podman(ctx context.Context, args ...string) ([]byte, error) {
-	return podmanIn(ctx, nil, args...)
-}
-
-// podmanIn runs podman with stdin, which is how secret values are passed: never as arguments
-func podmanIn(ctx context.Context, stdin []byte, args ...string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
-	defer cancel()
-	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, "podman", args...)
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if stdin != nil {
-		cmd.Stdin = bytes.NewReader(stdin)
-	}
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
-		if msg == "" {
-			msg = err.Error()
-		}
-		return nil, fmt.Errorf("podman %s: %s", args[0], msg)
-	}
-	return stdout.Bytes(), nil
-}
 
 type Container struct {
 	ID      string            `json:"Id"`
@@ -57,13 +32,10 @@ func (c Container) Unit() string {
 	return c.Labels["PODMAN_SYSTEMD_UNIT"]
 }
 
-func Containers(ctx context.Context) ([]Container, error) {
-	out, err := podman(ctx, "ps", "--all", "--format", "json")
-	if err != nil {
-		return nil, err
-	}
+func (client *Podman) Containers(ctx context.Context) ([]Container, error) {
 	var cs []Container
-	return cs, json.Unmarshal(out, &cs)
+	err := client.json(ctx, http.MethodGet, "/containers/json", url.Values{"all": {"true"}, "pod": {"true"}}, nil, &cs)
+	return nonNil(cs), err
 }
 
 type Image struct {
@@ -75,22 +47,35 @@ type Image struct {
 	Dangling   bool     `json:"Dangling"`
 }
 
-func Images(ctx context.Context) ([]Image, error) {
-	out, err := podman(ctx, "images", "--format", "json")
-	if err != nil {
-		return nil, err
-	}
+func (client *Podman) Images(ctx context.Context) ([]Image, error) {
 	var is []Image
-	return is, json.Unmarshal(out, &is)
+	err := client.json(ctx, http.MethodGet, "/images/json", nil, nil, &is)
+	return nonNil(is), err
 }
 
-func PruneImages(ctx context.Context, all bool) (string, error) {
-	args := []string{"image", "prune", "--force"}
-	if all {
-		args = append(args, "--all")
+func (client *Podman) PruneImages(ctx context.Context, all bool) (string, error) {
+	var reports []struct {
+		ID   string `json:"Id"`
+		Err  json.RawMessage
+		Size uint64
 	}
-	out, err := podman(ctx, args...)
-	return string(out), err
+	err := client.json(ctx, http.MethodPost, "/images/prune", url.Values{"all": {fmt.Sprint(all)}}, nil, &reports)
+	if err != nil {
+		return "", err
+	}
+	var output strings.Builder
+	var failures []error
+	var reclaimed uint64
+	for _, report := range reports {
+		if len(report.Err) != 0 && string(report.Err) != "null" {
+			failures = append(failures, fmt.Errorf("prune %s: %s", report.ID, report.Err))
+			continue
+		}
+		fmt.Fprintln(&output, report.ID)
+		reclaimed += report.Size
+	}
+	fmt.Fprintf(&output, "Reclaimed %d bytes", reclaimed)
+	return output.String(), errors.Join(failures...)
 }
 
 type Network struct {
@@ -111,25 +96,17 @@ type Volume struct {
 	CreatedAt  string `json:"CreatedAt"`
 }
 
-func Networks(ctx context.Context) ([]Network, error) {
-	out, err := podman(ctx, "network", "ls", "--format", "json")
-	if err != nil {
-		return nil, err
-	}
+func (client *Podman) Networks(ctx context.Context) ([]Network, error) {
 	var ns []Network
-	return ns, json.Unmarshal(out, &ns)
+	err := client.json(ctx, http.MethodGet, "/networks/json", nil, nil, &ns)
+	return nonNil(ns), err
 }
 
-func Volumes(ctx context.Context) ([]Volume, error) {
-	out, err := podman(ctx, "volume", "ls", "--format", "json")
-	if err != nil {
-		return nil, err
-	}
+func (client *Podman) Volumes(ctx context.Context) ([]Volume, error) {
 	var vs []Volume
-	return vs, json.Unmarshal(out, &vs)
+	err := client.json(ctx, http.MethodGet, "/volumes/json", nil, nil, &vs)
+	return nonNil(vs), err
 }
-
-/* Secrets: values go in over stdin and never come back out */
 
 var secretNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,252}$`)
 
@@ -147,48 +124,35 @@ type Secret struct {
 	} `json:"Spec"`
 }
 
-// Secrets lists the secrets. `podman secret ls --format json` prints "json" in Podman 5.4 and ls
-// humanizes its dates, so the IDs come from ls and the details from inspect, which leaves
-// the value out unless --showsecret is given.
-func Secrets(ctx context.Context) ([]Secret, error) {
-	out, err := podman(ctx, "secret", "ls", "--noheading", "--format", "{{.ID}}")
-	if err != nil {
-		return nil, err
-	}
-	ids := strings.Fields(string(out))
-	ss := []Secret{}
-	if len(ids) == 0 {
-		return ss, nil
-	}
-	out, err = podman(ctx, append([]string{"secret", "inspect"}, ids...)...)
-	if err != nil {
-		return nil, err
-	}
-	return ss, json.Unmarshal(out, &ss)
+func (client *Podman) Secrets(ctx context.Context) ([]Secret, error) {
+	var secrets []Secret
+	err := client.json(ctx, http.MethodGet, "/secrets/json", nil, nil, &secrets)
+	return nonNil(secrets), err
 }
 
 // SetSecret creates a secret, or replaces its value when replace is set
-func SetSecret(ctx context.Context, name string, value []byte, replace bool) error {
+func (client *Podman) SetSecret(ctx context.Context, name string, value []byte, replace bool) error {
 	if !secretNameRe.MatchString(name) {
 		return errors.New("secret names use letters, digits, dot, dash and underscore")
 	}
 	if len(value) == 0 || len(value) > maxSecretSize {
 		return errors.New("a secret value must be between 1 byte and 512 KiB")
 	}
-	args := []string{"secret", "create"}
-	if replace {
-		args = append(args, "--replace")
+	var result struct{ ID string }
+	if err := client.json(ctx, http.MethodPost, "/secrets/create", url.Values{"name": {name}, "replace": {fmt.Sprint(replace)}}, bytes.NewReader(value), &result); err != nil {
+		return err
 	}
-	_, err := podmanIn(ctx, value, append(args, name, "-")...)
-	return err
+	if result.ID == "" {
+		return fmt.Errorf("Podman API returned no created secret ID: %w", errOutcomeUnknown)
+	}
+	return nil
 }
 
-func RemoveSecret(ctx context.Context, name string) error {
+func (client *Podman) RemoveSecret(ctx context.Context, name string) error {
 	if !secretNameRe.MatchString(name) {
 		return errors.New("invalid secret name")
 	}
-	_, err := podman(ctx, "secret", "rm", name)
-	return err
+	return client.json(ctx, http.MethodDelete, "/secrets/"+url.PathEscape(name), nil, nil, nil)
 }
 
 // Convert turns a `docker run`/`podman run` command or a compose file into Quadlet files using podlet

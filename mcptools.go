@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path"
@@ -125,6 +126,16 @@ func add[In any](t *toolset, perms []string, tool *mcp.Tool, h func(ctx context.
 		if !ok {
 			err = errDenied{"this grant has ended or was revoked"}
 		} else {
+			ctx = context.WithValue(ctx, operationCheckKey{}, func() error {
+				current, active := t.s.grants.Get(g.ID)
+				if !active {
+					return errDenied{"this grant has ended or was revoked while the action was queued"}
+				}
+				if !maps.EqualFunc(current.Rules, g.Rules, func(left, right []string) bool { return slices.Equal(left, right) }) {
+					return errDenied{"grant permissions changed while the action was queued; retry with the current permissions"}
+				}
+				return nil
+			})
 			out, err = h(ctx, g, in)
 		}
 		if err != nil {
@@ -394,14 +405,12 @@ func (t *toolset) register() {
 			}
 			res := map[string]any{"saved": rel, "stack": scope, "validation": v}
 			if apply != "none" {
-				ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-				defer cancel()
-				if err := s.systemd.Reload(ctx); err != nil {
+				tasks := []operationTask{simpleTask("daemon-reload", "", s.systemd.Reload)}
+				if file := parseFile(s.files.abs(rel), rel); apply == "restart" && file.Unit != "" {
+					tasks = append(tasks, simpleTask("restart "+file.Unit, file.Unit, func(ctx context.Context) error { return s.systemd.Action(ctx, file.Unit, "restart") }))
+				}
+				if err := s.perform(ctx, "Apply "+rel, scope, tasks, false); err != nil {
 					res["applyError"] = err.Error()
-				} else if f := parseFile(s.files.abs(rel), rel); apply == "restart" && f.Unit != "" {
-					if err := s.systemd.Action(ctx, f.Unit, "restart"); err != nil {
-						res["applyError"] = err.Error()
-					}
 				}
 			}
 			return res, nil
@@ -409,7 +418,7 @@ func (t *toolset) register() {
 
 	add(t, []string{"files.write"}, &mcp.Tool{Name: "daemon_reload", Description: "systemctl --user daemon-reload, which regenerates the units from the Quadlet files.", Annotations: changes("Reload systemd", false)},
 		func(ctx context.Context, g Grant, _ noArgs) (any, error) {
-			return map[string]bool{"ok": true}, s.systemd.Reload(ctx)
+			return map[string]bool{"ok": true}, s.perform(ctx, "Reload systemd", "", []operationTask{simpleTask("daemon-reload", "", s.systemd.Reload)}, false)
 		})
 
 	add(t, []string{"files.delete"}, &mcp.Tool{Name: "delete_file", Description: "Delete a file; it stays restorable from the history in the web UI.", Annotations: changes("Delete file", true)},
@@ -442,17 +451,16 @@ func (t *toolset) register() {
 					unit = r.Unit
 				}
 			}
+			var tasks []operationTask
 			if in.Stop && unit != "" {
 				if err := need(g, "units.stop", scope); err != nil {
 					return nil, err
 				}
-				s.systemd.Action(ctx, unit, "stop")
+				tasks = append(tasks, simpleTask("stop "+unit, unit, func(ctx context.Context) error { return s.systemd.Action(ctx, unit, "stop") }))
 			}
-			if err := s.files.mcpDelete(rel); err != nil {
-				return nil, err
-			}
-			s.systemd.Reload(ctx)
-			return map[string]string{"deleted": rel}, nil
+			tasks = append(tasks, simpleTask("Delete "+rel, "", func(context.Context) error { return s.files.mcpDelete(rel) }), simpleTask("daemon-reload after deletion", "", s.systemd.Reload))
+			err = s.perform(ctx, "Delete "+rel, scope, tasks, false)
+			return map[string]string{"deleted": rel}, err
 		})
 
 	add(t, []string{"history.read"}, &mcp.Tool{Name: "file_history", Description: "List the saved versions of a file, or read one version.", Annotations: readOnly("File history")},
@@ -482,12 +490,6 @@ func (t *toolset) register() {
 		})
 
 	unitPerms := []string{"units.start", "units.stop", "units.restart"}
-	checkAction := func(action string) error {
-		if action != "start" && action != "stop" && action != "restart" {
-			return errors.New("action must be start, stop or restart")
-		}
-		return nil
-	}
 
 	add(t, unitPerms, &mcp.Tool{Name: "unit_action", Description: "Start, stop or restart one unit.", Annotations: changes("Unit action", true)},
 		func(ctx context.Context, g Grant, in unitArgs) (any, error) {
@@ -504,9 +506,8 @@ func (t *toolset) register() {
 			if err := need(g, "units."+in.Action, scopeOfUnit(inv, in.Unit)); err != nil {
 				return nil, err
 			}
-			ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-			defer cancel()
-			return map[string]bool{"ok": true}, s.systemd.Action(ctx, in.Unit, in.Action)
+			err = s.perform(ctx, in.Action+" "+in.Unit, "", []operationTask{simpleTask(in.Action+" "+in.Unit, in.Unit, func(ctx context.Context) error { return s.systemd.Action(ctx, in.Unit, in.Action) })}, false)
+			return map[string]bool{"ok": err == nil}, err
 		})
 
 	add(t, unitPerms, &mcp.Tool{Name: "stack_action", Description: "Start, stop or restart every unit of a stack.", Annotations: changes("Stack action", true)},
@@ -521,13 +522,12 @@ func (t *toolset) register() {
 			if err != nil {
 				return nil, errors.New("unknown stack")
 			}
-			ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-			defer cancel()
-			var errs []error
-			for _, u := range st.Units() {
-				errs = append(errs, s.systemd.Action(ctx, u, in.Action))
+			var tasks []operationTask
+			for _, unit := range st.Units() {
+				tasks = append(tasks, simpleTask(in.Action+" "+unit, unit, func(ctx context.Context) error { return s.systemd.Action(ctx, unit, in.Action) }))
 			}
-			return map[string]any{"ok": true, "units": st.Units()}, errors.Join(errs...)
+			err = s.perform(ctx, in.Action+" stack "+st.Name, st.ID, tasks, true)
+			return map[string]any{"ok": err == nil, "units": st.Units()}, err
 		})
 
 	add(t, []string{"logs.read"}, &mcp.Tool{Name: "read_logs", Description: "Recent journal lines of a unit or of all units of a stack.", Annotations: readOnly("Read logs")},
@@ -594,7 +594,7 @@ func (t *toolset) register() {
 				if len(in.Command) == 0 {
 					return nil, errors.New("give a command")
 				}
-				cs, err := Containers(ctx)
+				cs, err := s.podman.Containers(ctx)
 				if err != nil {
 					return nil, err
 				}
@@ -620,18 +620,12 @@ func (t *toolset) register() {
 				}
 				ctx, cancel := context.WithTimeout(ctx, time.Duration(min(timeout, 600))*time.Second)
 				defer cancel()
-				var stdout, stderr bytes.Buffer
-				cmd := exec.CommandContext(ctx, "podman", append([]string{"exec", found.ID}, in.Command...)...)
-				cmd.Stdout, cmd.Stderr = &stdout, &stderr
-				code := 0
-				if err := cmd.Run(); err != nil {
-					var ee *exec.ExitError
-					if !errors.As(err, &ee) {
-						return nil, err
-					}
-					code = ee.ExitCode()
+				stdout, stderr := boundedBuffer{limit: 64 << 10}, boundedBuffer{limit: 16 << 10}
+				code, err := s.podman.Exec(ctx, found.ID, in.Command, &stdout, &stderr)
+				if err != nil {
+					return nil, err
 				}
-				return map[string]any{"exitCode": code, "stdout": tail(stdout.Bytes(), 64<<10), "stderr": tail(stderr.Bytes(), 16<<10)}, nil
+				return map[string]any{"exitCode": code, "stdout": string(stdout.data), "stderr": string(stderr.data)}, nil
 			})
 	}
 
@@ -645,16 +639,11 @@ func (t *toolset) register() {
 				return nil, errors.New("unknown stack")
 			}
 			var res []map[string]string
-			for _, f := range st.Files {
-				if f.Image == "" || strings.HasSuffix(f.Image, ".image") || strings.HasSuffix(f.Image, ".build") {
-					continue
-				}
-				pctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
-				out, err := exec.CommandContext(pctx, "podman", "pull", "--quiet", f.Image).CombinedOutput()
-				cancel()
-				r := map[string]string{"image": f.Image, "id": strings.TrimSpace(string(out))}
+			for _, image := range stackImages(st) {
+				ids, err := s.podman.Pull(ctx, image, nil)
+				r := map[string]string{"image": image, "id": strings.Join(ids, ",")}
 				if err != nil {
-					r = map[string]string{"image": f.Image, "error": firstNonEmpty(strings.TrimSpace(string(out)), err.Error())}
+					r = map[string]string{"image": image, "error": err.Error()}
 				}
 				res = append(res, r)
 			}
@@ -662,21 +651,21 @@ func (t *toolset) register() {
 		})
 
 	add(t, []string{"images.read"}, &mcp.Tool{Name: "list_images", Description: "Images in local storage.", Annotations: readOnly("List images")},
-		func(ctx context.Context, g Grant, _ noArgs) (any, error) { return Images(ctx) })
+		func(ctx context.Context, g Grant, _ noArgs) (any, error) { return s.podman.Images(ctx) })
 
 	add(t, []string{"images.prune"}, &mcp.Tool{Name: "prune_images", Description: "Remove dangling images, or with all, every image no container uses.", Annotations: changes("Prune images", true)},
 		func(ctx context.Context, g Grant, in pruneArgs) (any, error) {
-			out, err := PruneImages(ctx, in.All)
+			out, err := s.podman.PruneImages(ctx, in.All)
 			return map[string]string{"output": out}, err
 		})
 
 	add(t, []string{"resources.read"}, &mcp.Tool{Name: "list_resources", Description: "Podman networks and volumes, and the Quadlet network and volume files with the stacks that use them.", Annotations: readOnly("List networks and volumes")},
 		func(ctx context.Context, g Grant, _ noArgs) (any, error) {
-			ns, err := Networks(ctx)
+			ns, err := s.podman.Networks(ctx)
 			if err != nil {
 				return nil, err
 			}
-			vs, err := Volumes(ctx)
+			vs, err := s.podman.Volumes(ctx)
 			if err != nil {
 				return nil, err
 			}
@@ -696,7 +685,7 @@ func (t *toolset) register() {
 
 	add(t, []string{"secrets.write"}, &mcp.Tool{Name: "set_secret", Description: "Create a secret, or replace its value. Running containers keep the old value until they restart.", Annotations: changes("Set secret", false)},
 		func(ctx context.Context, g Grant, in setSecretArgs) (any, error) {
-			return map[string]bool{"ok": true}, SetSecret(ctx, in.Name, []byte(in.Value), in.Replace)
+			return map[string]bool{"ok": true}, s.podman.SetSecret(ctx, in.Name, []byte(in.Value), in.Replace)
 		})
 
 	add(t, []string{"secrets.delete"}, &mcp.Tool{Name: "remove_secret", Description: "Delete a secret. Refused while files reference it, unless force is set.", Annotations: changes("Delete secret", true)},
@@ -704,6 +693,6 @@ func (t *toolset) register() {
 			if uses, err := s.secretUses(); err == nil && len(uses[in.Name]) > 0 && !in.Force {
 				return nil, errors.New("this secret is still used by " + uses[in.Name][0].Path)
 			}
-			return map[string]bool{"ok": true}, RemoveSecret(ctx, in.Name)
+			return map[string]bool{"ok": true}, s.podman.RemoveSecret(ctx, in.Name)
 		})
 }

@@ -8,6 +8,8 @@
   import McpView from './lib/McpView.svelte'
   import { catalog, loadSecrets } from './lib/catalog.svelte'
   import ImportDialog from './lib/ImportDialog.svelte'
+  import Activity from './lib/Activity.svelte'
+  import { activity, isActive } from './lib/operations.svelte'
 
   let me = $state<Me>()
   let stacks = $state<Stack[]>([])
@@ -25,13 +27,21 @@
     partial: stacks.filter((s) => s.state === 'partial').length,
     failed: stacks.filter((s) => s.state === 'failed').length,
     stopped: stacks.filter((s) => s.state === 'stopped').length,
+    busy: stacks.filter((s) => s.state === 'busy').length,
+    unknown: stacks.filter((s) => s.state === 'unknown').length,
   })
 
   function go(path: string) {
     location.hash = path
   }
 
-  async function refresh() {
+  let refreshing: Promise<void> | undefined
+  function refresh() {
+    if (!refreshing) refreshing = loadStacks().finally(() => (refreshing = undefined))
+    return refreshing
+  }
+
+  async function loadStacks() {
     try {
       const r = await api.stacks()
       stacks = r.stacks
@@ -56,10 +66,14 @@
   }
 
   onMount(() => {
-    api.me().then((m) => (me = m))
+    api.me().then((m) => (me = m)).catch((error) => (loadError = error.message))
     refresh()
     loadSecrets()
-    const timer = setInterval(() => document.visibilityState === 'visible' && refresh(), 5000)
+    let ticks = 0
+    const timer = setInterval(() => {
+      ticks++
+      if (document.visibilityState === 'visible' && (ticks % 5 === 0 || activity.items.some(isActive))) refresh()
+    }, 1000)
     const onHash = () => (route = location.hash.slice(1) || '/')
     addEventListener('hashchange', onHash)
     return () => {
@@ -116,6 +130,7 @@
     {#if loadError}<div class="error-box">{loadError}</div>{/if}
     {#if me?.journal}<div class="error-box">{me.journal}</div>{/if}
     {#each warnings as w}<div class="error-box">{w}</div>{/each}
+    <Activity {stacks} onchanged={refresh} />
 
     {#if route === '/images'}
       <ImagesView />
@@ -127,7 +142,7 @@
       <McpView {stacks} />
     {:else if stackID}
       {#if current}
-        <StackView stack={current} {me} {refresh} />
+        {#key current.id}<StackView stack={current} {me} {refresh} />{/key}
       {:else if stacks.length}
         <p class="muted">This stack no longer exists. <a href="#/">Back</a></p>
       {/if}
@@ -139,6 +154,8 @@
           <div class="panel"><span class="dot partial"></span><b>{counts.partial}</b> partly running</div>
           <div class="panel"><span class="dot failed"></span><b>{counts.failed}</b> failed</div>
           <div class="panel"><span class="dot"></span><b>{counts.stopped}</b> stopped</div>
+          {#if counts.busy}<div class="panel"><span class="dot busy"></span><b>{counts.busy}</b> changing</div>{/if}
+          {#if counts.unknown}<div class="panel"><span class="dot unknown"></span><b>{counts.unknown}</b> unknown</div>{/if}
         </div>
         {#if me}
           <p class="muted">Quadstack {me.version}, managing <code>{me.quadletDir}</code> on <b>{me.host}</b>.

@@ -119,9 +119,9 @@ WantedBy=default.target
 }
 
 // Turns systemd's unit state into the badge shown in the UI
-export function unitBadge(active?: string): 'running' | 'failed' | 'stopped' | 'busy' {
+export function unitBadge(active?: string): 'running' | 'failed' | 'stopped' | 'busy' | 'unknown' {
   if (active === 'active') return 'running'
   if (active === 'failed') return 'failed'
   if (active === 'activating' || active === 'deactivating' || active === 'reloading') return 'busy'
-  return 'stopped'
+  return active === 'inactive' ? 'stopped' : 'unknown'
 }

@@ -16,13 +16,15 @@ import (
 )
 
 type Server struct {
-	cfg     *Config
-	auth    *Authenticator
-	files   *Files
-	systemd *Systemd
-	static  fs.FS
-	grants  *Grants
-	audit   *Audit
+	cfg        *Config
+	auth       *Authenticator
+	files      *Files
+	systemd    systemdClient
+	podman     *Podman
+	operations Operations
+	static     fs.FS
+	grants     *Grants
+	audit      *Audit
 }
 
 func (s *Server) Routes() http.Handler {
@@ -39,6 +41,9 @@ func (s *Server) Routes() http.Handler {
 		"POST /api/stack-action":        s.stackAction,
 		"POST /api/unit-action":         s.unitAction,
 		"POST /api/reload":              s.reload,
+		"POST /api/pull":                s.pullImages,
+		"GET /api/operations":           s.listOperations,
+		"GET /api/operations/{id}":      s.getOperation,
 		"GET /api/file":                 s.readFile,
 		"PUT /api/file":                 s.writeFile,
 		"POST /api/file":                s.createFile,
@@ -60,7 +65,6 @@ func (s *Server) Routes() http.Handler {
 		"POST /api/mcp/grants/{id}/end": s.endGrant,
 		"DELETE /api/mcp/grants/{id}":   s.deleteGrant,
 		"GET /ws/logs":                  s.wsLogs,
-		"GET /ws/pull":                  s.wsPull,
 		"GET /ws/exec":                  s.wsExec,
 	}
 	for pattern, h := range api {
@@ -240,7 +244,7 @@ func (s *Server) overview(ctx context.Context) (*overview, error) {
 	if err != nil {
 		o.warnings = append(o.warnings, err.Error())
 	}
-	containers, err := Containers(ctx)
+	containers, err := s.podman.Containers(ctx)
 	if err != nil {
 		o.warnings = append(o.warnings, err.Error())
 	}
@@ -268,18 +272,27 @@ func stackState(units []string, status map[string]UnitState) string {
 	if len(units) == 0 {
 		return "empty"
 	}
-	active, failed := 0, 0
+	active, failed, transitioning, unknown := 0, 0, false, false
 	for _, u := range units {
 		switch status[u].Active {
-		case "active", "activating", "reloading":
+		case "active":
 			active++
+		case "activating", "deactivating", "reloading":
+			transitioning = true
 		case "failed":
 			failed++
+		case "inactive":
+		default:
+			unknown = true
 		}
 	}
 	switch {
 	case failed > 0:
 		return "failed"
+	case transitioning:
+		return "busy"
+	case unknown:
+		return "unknown"
 	case active == len(units):
 		return "running"
 	case active > 0:
@@ -322,24 +335,27 @@ func (s *Server) stackAction(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	if err := checkAction(req.Action); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
 	st, err := FindStack(s.cfg.QuadletDir, req.Stack)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, errors.New("unknown stack"))
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
-	defer cancel()
-	var errs []error
-	for _, u := range st.Units() {
-		if err := s.systemd.Action(ctx, u, req.Action); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if err := errors.Join(errs...); err != nil {
-		writeErr(w, http.StatusBadGateway, err)
+	units := st.Units()
+	if len(units) == 0 {
+		writeErr(w, http.StatusBadRequest, errors.New("this stack has no runnable units"))
 		return
 	}
-	writeJSON(w, map[string]bool{"ok": true})
+	tasks := make([]operationTask, 0, len(units))
+	for _, unit := range units {
+		tasks = append(tasks, simpleTask(req.Action+" "+unit, unit, func(ctx context.Context) error {
+			return s.systemd.Action(ctx, unit, req.Action)
+		}))
+	}
+	s.enqueue(w, req.Action+" stack "+st.Name, st.ID, tasks, true)
 }
 
 // POST /api/unit-action {unit, action}
@@ -353,21 +369,17 @@ func (s *Server) unitAction(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("invalid unit"))
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
-	defer cancel()
-	if err := s.systemd.Action(ctx, req.Unit, req.Action); err != nil {
-		writeErr(w, http.StatusBadGateway, err)
+	if err := checkAction(req.Action); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, map[string]bool{"ok": true})
+	s.enqueue(w, req.Action+" "+req.Unit, "", []operationTask{simpleTask(req.Action+" "+req.Unit, req.Unit, func(ctx context.Context) error {
+		return s.systemd.Action(ctx, req.Unit, req.Action)
+	})}, false)
 }
 
 func (s *Server) reload(w http.ResponseWriter, r *http.Request) {
-	if err := s.systemd.Reload(r.Context()); err != nil {
-		writeErr(w, http.StatusBadGateway, err)
-		return
-	}
-	writeJSON(w, map[string]bool{"ok": true})
+	s.enqueue(w, "Reload systemd", "", []operationTask{simpleTask("daemon-reload", "", s.systemd.Reload)}, false)
 }
 
 func (s *Server) readFile(w http.ResponseWriter, r *http.Request) {
@@ -403,6 +415,10 @@ func (s *Server) saveAndApply(w http.ResponseWriter, r *http.Request, created bo
 	if !ok {
 		return
 	}
+	if req.Apply != "" && req.Apply != "reload" && req.Apply != "restart" {
+		writeErr(w, http.StatusBadRequest, errors.New("apply must be empty, reload or restart"))
+		return
+	}
 	v := s.files.Validate(r.Context(), rel, &req.Content)
 	if !v.OK && !req.Force {
 		writeJSONStatus(w, http.StatusUnprocessableEntity, map[string]any{"error": "Validation failed", "validation": v})
@@ -419,14 +435,17 @@ func (s *Server) saveAndApply(w http.ResponseWriter, r *http.Request, created bo
 
 	resp := map[string]any{"ok": true, "validation": v}
 	if req.Apply == "reload" || req.Apply == "restart" {
-		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
-		defer cancel()
-		if err := s.systemd.Reload(ctx); err != nil {
-			resp["applyError"] = err.Error()
-		} else if f := parseFile(s.files.abs(rel), rel); req.Apply == "restart" && f.Unit != "" {
-			if err := s.systemd.Action(ctx, f.Unit, "restart"); err != nil {
-				resp["applyError"] = err.Error()
-			}
+		tasks := []operationTask{simpleTask("daemon-reload", "", s.systemd.Reload)}
+		if file := parseFile(s.files.abs(rel), rel); req.Apply == "restart" && file.Unit != "" {
+			tasks = append(tasks, simpleTask("restart "+file.Unit, file.Unit, func(ctx context.Context) error {
+				return s.systemd.Action(ctx, file.Unit, "restart")
+			}))
+		}
+		operation, err := s.operations.Submit(context.Background(), "Apply "+rel, "", tasks, false)
+		if err != nil {
+			resp["applyError"] = "File saved, but applying was not queued: " + err.Error()
+		} else {
+			resp["operation"] = operation
 		}
 	}
 	writeJSON(w, resp)
@@ -440,16 +459,14 @@ func (s *Server) deleteFile(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Stop the unit first so systemd does not keep a running service whose file is gone
+	var tasks []operationTask
 	if f := parseFile(s.files.abs(rel), rel); f.Unit != "" && r.URL.Query().Get("stop") == "1" {
-		s.systemd.Action(r.Context(), f.Unit, "stop")
+		tasks = append(tasks, simpleTask("stop "+f.Unit, f.Unit, func(ctx context.Context) error {
+			return s.systemd.Action(ctx, f.Unit, "stop")
+		}))
 	}
-	if err := s.files.Delete(rel); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	s.systemd.Reload(r.Context())
-	writeJSON(w, map[string]bool{"ok": true})
+	tasks = append(tasks, simpleTask("Delete "+rel, "", func(context.Context) error { return s.files.Delete(rel) }), simpleTask("daemon-reload after deletion", "", s.systemd.Reload))
+	s.enqueue(w, "Delete "+rel, "", tasks, false)
 }
 
 func (s *Server) moveFile(w http.ResponseWriter, r *http.Request) {
@@ -470,8 +487,12 @@ func (s *Server) moveFile(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	s.systemd.Reload(r.Context())
-	writeJSON(w, map[string]bool{"ok": true})
+	operation, err := s.operations.Submit(context.Background(), "Reload after moving "+from+" to "+to, "", []operationTask{simpleTask("daemon-reload", "", s.systemd.Reload)}, false)
+	if err != nil {
+		writeJSON(w, map[string]any{"ok": true, "applyError": "File moved, but reload was not queued: " + err.Error()})
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true, "operation": operation})
 }
 
 func (s *Server) validate(w http.ResponseWriter, r *http.Request) {
@@ -514,7 +535,7 @@ func (s *Server) historyVersion(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) images(w http.ResponseWriter, r *http.Request) {
-	is, err := Images(r.Context())
+	is, err := s.podman.Images(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -524,13 +545,15 @@ func (s *Server) images(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) pruneImages(w http.ResponseWriter, r *http.Request) {
 	var req struct{ All bool }
-	readJSON(r, &req)
-	out, err := PruneImages(r.Context(), req.All)
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, err)
+	if err := readJSON(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	writeJSON(w, map[string]string{"output": out})
+	s.enqueue(w, "Prune images", "", []operationTask{{name: "Prune images", run: func(ctx context.Context, report func(string)) error {
+		output, err := s.podman.PruneImages(ctx, req.All)
+		report(output)
+		return err
+	}}}, false)
 }
 
 func (s *Server) convert(w http.ResponseWriter, r *http.Request) {
@@ -549,12 +572,12 @@ func (s *Server) convert(w http.ResponseWriter, r *http.Request) {
 
 // GET /api/podman-resources lists the networks and volumes Podman knows, Quadlet-defined or not
 func (s *Server) podmanResources(w http.ResponseWriter, r *http.Request) {
-	ns, err := Networks(r.Context())
+	ns, err := s.podman.Networks(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
-	vs, err := Volumes(r.Context())
+	vs, err := s.podman.Volumes(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
@@ -597,7 +620,7 @@ func (s *Server) secrets(w http.ResponseWriter, r *http.Request) {
 
 // secretList combines Podman's secrets with the files that reference them
 func (s *Server) secretList(ctx context.Context) ([]map[string]any, error) {
-	ss, err := Secrets(ctx)
+	ss, err := s.podman.Secrets(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -652,11 +675,13 @@ func (s *Server) setSecret(w http.ResponseWriter, r *http.Request) {
 		}
 		value = b
 	}
-	if err := SetSecret(r.Context(), req.Name, value, req.Replace); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+	if !secretNameRe.MatchString(req.Name) || len(value) == 0 || len(value) > maxSecretSize {
+		writeErr(w, http.StatusBadRequest, errors.New("use a valid secret name and a value of 1 byte to 512 KiB"))
 		return
 	}
-	writeJSON(w, map[string]bool{"ok": true})
+	s.enqueue(w, "Set secret "+req.Name, "", []operationTask{simpleTask("Set secret "+req.Name, "", func(ctx context.Context) error {
+		return s.podman.SetSecret(ctx, req.Name, value, req.Replace)
+	})}, false)
 }
 
 func readSecretFile(p string) ([]byte, error) {
@@ -680,13 +705,15 @@ func readSecretFile(p string) ([]byte, error) {
 
 func (s *Server) removeSecret(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
+	if !secretNameRe.MatchString(name) {
+		writeErr(w, http.StatusBadRequest, errors.New("invalid secret name"))
+		return
+	}
 	if uses, err := s.secretUses(); err == nil && len(uses[name]) > 0 && r.URL.Query().Get("force") != "1" {
 		writeErr(w, http.StatusConflict, errors.New("this secret is still used by "+uses[name][0].Path))
 		return
 	}
-	if err := RemoveSecret(r.Context(), name); err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
-	writeJSON(w, map[string]bool{"ok": true})
+	s.enqueue(w, "Remove secret "+name, "", []operationTask{simpleTask("Remove secret "+name, "", func(ctx context.Context) error {
+		return s.podman.RemoveSecret(ctx, name)
+	})}, false)
 }

@@ -2,7 +2,7 @@
 
 A small web UI for **rootless Podman Quadlets**, in the spirit of [Dockge](https://github.com/louislam/dockge): your `.container`, `.pod`, `.network` and other Quadlet files grouped into stacks you can edit, check, start, stop and update from the browser, with live logs and container shells.
 
-Quadstack runs as a user service of the account that owns the Quadlets. It has no root helper and needs no Podman socket. It only edits the files in `~/.config/containers/systemd` and talks to that user's systemd, so everything it does stays ordinary Quadlet configuration.
+Quadstack runs as a user service of the account that owns the Quadlets, with no root helper. It manages Quadlet services through systemd's D-Bus API and uses Podman's native REST API over that account's local rootless Unix socket for container information, image pulls, pruning, secrets and container shells. It does not invoke the Podman CLI or expose the Podman API over TCP. Quadlet configuration stays in `~/.config/containers/systemd`.
 
 ![Quadstack stack editor showing sample containers, configuration, unit status and logs](docs/screenshots/stack-editor.png)
 
@@ -18,11 +18,12 @@ Quadstack runs as a user service of the account that owns the Quadlets. It has n
   - **Save & reload** runs `daemon-reload`. **Deploy** also restarts the unit.
 - **History, without git.** Every save, move or delete first keeps the previous version under `~/.local/state/quadstack/history`, for the last 50 versions per file. You can diff any version against the editor and load it back.
 - **Units.** Start, stop or restart a whole stack or a single unit. You see their systemd state and whether they start at boot (`[Install]`).
+- **Activity.** Managed actions are queued on the server, with per-step progress, elapsed time, deadlines, results, errors and links to logs. Navigating away or reloading the page does not cancel a web action. Connection loss and timeouts are reported explicitly, not as success; unavailable unit state is shown as unknown rather than stopped.
 - **Logs.** A live `journalctl` view per stack or per unit.
-- **Update.** Pulls the images of a stack's containers in a live terminal and offers a restart afterwards.
-- **Shell.** Runs `podman exec` into a running container in the browser. You can turn it off with `QUADSTACK_TERMINAL=false`.
+- **Update.** Pulls the images of a stack's containers with live API progress in Activity and offers a restart afterwards.
+- **Shell.** Opens a container exec session through Podman's API in the browser. You can turn it off with `QUADSTACK_TERMINAL=false`.
 - **Networks & volumes.** Top-level `.network` and `.volume` files are shared resources rather than stacks, listed with the stacks that use them, next to the Podman networks and volumes no file defines. Each stack shows its containers' bind mounts, volumes, networks and secrets.
-- **Secrets.** Podman secrets: create, replace and delete, with the files that use each one. Values go in over stdin and are never shown. In a container's editor, **Secrets** moves an `Environment=` value or a mounted key file into a secret and rewrites the line to `Secret=`.
+- **Secrets.** Podman secrets: create, replace and delete, with the files that use each one. Values go only in the local API request body, never in a command line or Activity, and are never returned. In a container's editor, **Secrets** moves an `Environment=` value or a mounted key file into a secret and rewrites the line to `Secret=`.
 - **Images.** A list with sizes and usage, plus pruning of dangling or unused images.
 - **Import.** Paste a `docker run` command or a compose file and get Quadlet files. This needs [podlet](https://github.com/containers/podlet) on `PATH`. The installer offers to install it to `/usr/local/bin` and keeps it up to date on updates. Unattended runs skip it unless `QS_PODLET=1` is set.
 - **AI access over MCP, off by default.** See [AI access](#ai-access-mcp).
@@ -32,8 +33,17 @@ Quadstack runs as a user service of the account that owns the Quadlets. It has n
 
 - Linux with systemd and Podman 4.4 or newer. Podman 5 is recommended.
 - A user account that owns the Quadlets, with lingering enabled (`loginctl enable-linger <user>`).
+- That user's `podman.socket`, enabled by the installer or manually with `systemctl --user enable --now podman.socket`.
 - An OIDC client whose redirect URI is `https://<your host>/auth/callback`.
 - A reverse proxy with TLS in front of Quadstack.
+
+## Action feedback and recovery
+
+Activity keeps the 50 most recent operations in memory. Web actions continue on the server after navigation, page reloads, or a dropped browser connection; restarting Quadstack clears this history. Operations run one at a time to avoid replacing each other's systemd jobs. The queue accepts at most 16 pending operations. A normal operation has a five-minute deadline, including queue time; image-pull operations have fifteen minutes. Individual API and D-Bus calls also have deadlines.
+
+Each step reports queued, running, succeeded, failed, timed out, cancelled, unknown, or skipped. Deploy does not restart a unit if daemon-reload fails, and deletion does not remove a file if its requested stop fails. A successful systemd job means systemd completed that job, not that the application passed a health check. A timeout or lost connection does not prove that an already-submitted job or exec command stopped. Inspect its state and logs before retrying; Quadstack never automatically retries a mutating request.
+
+The web action endpoints return an operation ID immediately instead of holding a request open while systemd or an image pull finishes. `GET /api/operations` and `GET /api/operations/{id}` return progress and results for signed-in users. Saving a file returns its validation and, when requested, a separate apply operation, so a successful save is not confused with a successful deployment.
 
 ## Install
 
@@ -87,6 +97,7 @@ $EDITOR ~/.config/quadstack/quadstack.env
 curl -L -o ~/.config/systemd/user/quadstack.service \
   https://raw.githubusercontent.com/denMaier/quadstack/main/deploy/quadstack.service
 systemctl --user daemon-reload
+systemctl --user enable --now podman.socket
 systemctl --user enable --now quadstack
 ```
 
@@ -108,11 +119,22 @@ This lets the account, and so anyone who can sign in to Quadstack, read the whol
 
 ### Update
 
-Run the installer again and choose **update**, or do the same with `update` in an LXC it created. By hand, replace the binary and restart; settings and history stay:
+Run the installer again and choose **update**, or do the same with `update` in an LXC it created. Update installs the binary and the managed `quadstack.service` from the same published release, reloads systemd, enables and starts the rootless Podman socket, and restarts Quadstack. Pushing source to `main` alone does not publish a release or update running hosts.
+
+Settings, Quadlets, history and systemd drop-ins stay. The main `quadstack.service` file is replaced; keep service customizations in `~/.config/systemd/user/quadstack.service.d/*.conf` instead of editing that file.
+
+For an unattended update, run as root:
 
 ```sh
-curl -L -o ~/.local/bin/quadstack \
-  https://github.com/denMaier/quadstack/releases/latest/download/quadstack_linux_amd64
+QS_MODE=update QS_YES=1 \
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/denMaier/quadstack/main/deploy/install.sh)"
+```
+
+For a manual upgrade, replace both the binary and `~/.config/systemd/user/quadstack.service` with the files from the same release, then run as the account that owns the Quadlets:
+
+```sh
+systemctl --user daemon-reload
+systemctl --user enable --now podman.socket
 systemctl --user restart quadstack
 ~/.local/bin/quadstack -version
 ```
@@ -134,6 +156,7 @@ Every setting is an environment variable. See [`deploy/quadstack.env.example`](d
 | `QUADSTACK_STATE_DIR` | `~/.local/state/quadstack` | History and the session key |
 | `QUADSTACK_QUADLET_BIN` | found in `/usr/libexec/podman` or `/usr/lib/podman` | Validation is skipped when it is missing |
 | `QUADSTACK_PODLET_BIN` | `podlet` on `PATH` | Enables Import |
+| `QUADSTACK_PODMAN_SOCKET` | `$XDG_RUNTIME_DIR/podman/podman.sock`, otherwise `/run/user/<uid>/podman/podman.sock` | Absolute local Unix socket path; TCP URLs are rejected |
 | `QUADSTACK_TERMINAL` | `true` | Shells into containers, and the MCP `exec` tool |
 | `QUADSTACK_MCP_MAX_HOURS` | `24` | The longest an MCP grant may last; `0` turns MCP access off |
 
@@ -209,6 +232,7 @@ Every call goes to `~/.local/state/quadstack/mcp-audit.jsonl` and to the **AI ac
 
 ## Security notes
 
+- The rootless Podman API socket grants full Podman access as its owning user; it is not a read-only socket. Keep the standard user-only socket permissions and never expose it through a TCP listener or the web reverse proxy. Quadstack uses only a local Unix connection and follows no API redirects. On an existing installation, enable `podman.socket` for the Quadlet user before restarting the upgraded binary: `systemctl --user enable --now podman.socket`.
 - Anyone who can sign in can do what the Quadlet account can do. That includes mounting any path the account can read into a container. Keep the allowed users and groups short.
 - Changing requests need a same-site session cookie and a custom header. Websockets only accept the origin of `QUADSTACK_PUBLIC_URL`.
 - An MCP grant acts with the account's rights within its rules. Exec and Write on a stack are effectively full control of that stack's containers; Write can also bind-mount any path the account can read.
@@ -229,7 +253,7 @@ cd web && npm run dev   # Vite on :5173, proxying to a backend on :8090
 
 To release, push a tag `vX.Y.Z`. GitHub Actions runs the tests and publishes `quadstack_linux_amd64`, `quadstack_linux_arm64` and `SHA256SUMS`, with the tag built in as the version.
 
-The backend is Go: go-oidc, go-systemd (D-Bus), coder/websocket and creack/pty. The UI is Svelte 5 with CodeMirror 6 and xterm.js, embedded in the binary.
+The backend is Go: go-oidc, go-systemd (D-Bus), a typed `net/http` client for Podman's native API over a Unix socket, coder/websocket and creack/pty. Podman runtime operations do not spawn a CLI. The Quadlet generator, optional podlet converter, and journalctl log reader remain external tools. The UI is Svelte 5 with CodeMirror 6 and xterm.js, embedded in the binary.
 
 ## License
 
