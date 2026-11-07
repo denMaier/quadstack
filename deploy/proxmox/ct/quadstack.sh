@@ -42,5 +42,5 @@ description
 
 msg_ok "Completed successfully!\n"
 echo -e "${CREATING}${GN}${APP} setup has been successfully initialized!${CL}"
-echo -e "${INFO}${YW} Point your reverse proxy (with websockets) at:${CL}"
-echo -e "${GATEWAY}${BGN}http://${IP}:8090${CL}"
+echo -e "${INFO}${YW} Point your reverse proxy (with websockets) at this container, using the listen port selected in the installer:${CL}"
+echo -e "${GATEWAY}${BGN}${IP}${CL}"

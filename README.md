@@ -63,9 +63,11 @@ It asks for:
 - the public URL;
 - the OIDC issuer, client ID and secret;
 - the groups and/or users allowed to sign in;
-- the listen address;
+- the listen address and port (default `0.0.0.0:8090`, all IPv4 interfaces);
 - whether to allow shells into containers;
 - the longest an MCP grant may last.
+
+Choose another port with an address such as `0.0.0.0:9080`, or bind to `127.0.0.1:9080` when the reverse proxy runs on the same machine. On an existing installation, choose **reconfigure** to change the address or port; **update** preserves it. Unattended installs can set `QS_LISTEN` to the full address and port.
 
 It shows the redirect URI to register with your provider before asking for the client. An answer it can't use is asked again, with what you typed filled in. A URL without a scheme gets `https://`. It also sets `XDG_RUNTIME_DIR` in the account's shell profile, so `systemctl --user` works after `sudo -iu <user>` or `su <user>`. The binary is checked against the release's `SHA256SUMS`. When the account is a system account, the installer offers the journal ACL from [Logs of system accounts](#logs-of-system-accounts).
 
@@ -145,7 +147,7 @@ Every setting is an environment variable. See [`deploy/quadstack.env.example`](d
 
 | Variable | Default | |
 | --- | --- | --- |
-| `QUADSTACK_LISTEN` | `127.0.0.1:8090` | Address to listen on |
+| `QUADSTACK_LISTEN` | `127.0.0.1:8090` | Address and port; the installer defaults to `0.0.0.0:8090` |
 | `QUADSTACK_PUBLIC_URL` | *required* | The URL people open, used for the OIDC callback |
 | `QUADSTACK_OIDC_ISSUER`, `_CLIENT_ID`, `_CLIENT_SECRET` | *required* (secret optional for public clients) | |
 | `QUADSTACK_OIDC_SCOPES` | `openid profile email groups` | |

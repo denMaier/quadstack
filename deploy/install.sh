@@ -316,7 +316,7 @@ check_listen() {
   QS_LISTEN=${QS_LISTEN//[[:space:]]/}
   local port=${QS_LISTEN##*:} cur
   if [[ ! $QS_LISTEN =~ :[1-9][0-9]{0,4}$ ]] || ((port > 65535)); then
-    WHY="The listen address must look like 0.0.0.0:8090"
+    WHY="The listen address and port must look like 0.0.0.0:8090, with a port from 1 to 65535"
     return 1
   fi
   cur=$(envget QUADSTACK_LISTEN "$ENVF")
@@ -492,7 +492,7 @@ and scopes openid, profile, email and groups. Then enter its details next."
     QS_ALLOWED_GROUPS="" QS_ALLOWED_USERS=""
   done
 
-  ask_valid check_listen QS_LISTEN "Listen address for the reverse proxy to reach" "$(envget QUADSTACK_LISTEN "$ENVF" 0.0.0.0:8090)"
+  ask_valid check_listen QS_LISTEN "Listen address and port (0.0.0.0 = all IPv4 interfaces)" "$(envget QUADSTACK_LISTEN "$ENVF" 0.0.0.0:8090)"
 
   if [[ -z ${QS_TERMINAL:-} ]]; then
     if confirm "Allow shells into containers from the browser (and the MCP exec tool)?" "$([[ $(envget QUADSTACK_TERMINAL "$ENVF") == false ]] && echo no || echo yes)"; then QS_TERMINAL=true; else QS_TERMINAL=false; fi

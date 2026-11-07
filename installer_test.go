@@ -178,3 +178,121 @@ wait_active() { printf 'active %s\n' "$1" >>"$INSTALLER_TEST_EVENTS"; }
 		})
 	}
 }
+
+func TestInstallerListenSelection(testingT *testing.T) {
+	bashPath, err := exec.LookPath("bash")
+	if err != nil {
+		testingT.Skip("bash is unavailable")
+	}
+	installer, err := os.ReadFile("deploy/install.sh")
+	if err != nil {
+		testingT.Fatal(err)
+	}
+	proxmox, err := os.ReadFile("deploy/proxmox/install/quadstack-install.sh")
+	if err != nil {
+		testingT.Fatal(err)
+	}
+	asks := installerSection(testingT, string(installer), "ask() {", "ask_secret() {")
+	environment := installerSection(testingT, string(installer), "envget() {", "resolve_version() {")
+	validation := installerSection(testingT, string(installer), "check_listen() {", "check_hours() {")
+	prompt := installerSection(testingT, string(installer), "  ask_valid check_listen", "\n\n")
+	wrapper := installerSection(testingT, string(proxmox), "QS_FRESH=1", "\nmotd_ssh")
+	const harness = `
+BT=Quadstack
+tty_ui() { return 0; }
+die() { printf '%s\n' "$1" >&2; exit 1; }
+cancelled() { die Cancelled; }
+whiptail() {
+  printf '%s\n' "$6" >>"$INSTALLER_TEST_PROMPTS"
+  printf '%s\n' "${INSTALLER_TEST_ANSWER:-${!#}}" >&2
+}
+ss() {
+  if [[ $INSTALLER_TEST_BUSY == 1 ]]; then printf 'LISTEN\n'; fi
+}
+curl() { printf '%s\n' "$INSTALLER_TEST_PROMPT"; }
+bash() {
+  [[ $# == 2 && $1 == -c ]]
+  eval "$2"
+  envline QUADSTACK_LISTEN "$QS_LISTEN"
+}
+`
+	for _, testCase := range []struct {
+		name       string
+		saved      string
+		provided   string
+		answer     string
+		unattended bool
+		busy       bool
+		expected   string
+		prompts    int
+		errorText  string
+	}{
+		{name: "interactive defaults", expected: "0.0.0.0:8090", prompts: 1},
+		{name: "custom port", answer: "0.0.0.0:9080", expected: "0.0.0.0:9080", prompts: 1},
+		{name: "loopback", answer: "127.0.0.1:9081", expected: "127.0.0.1:9081", prompts: 1},
+		{name: "specific interface", answer: "192.0.2.10:9082", expected: "192.0.2.10:9082", prompts: 1},
+		{name: "IPv6", answer: "[::]:9083", expected: "[::]:9083", prompts: 1},
+		{name: "keep existing", saved: "127.0.0.1:8181", expected: "127.0.0.1:8181", prompts: 1},
+		{name: "change existing", saved: "127.0.0.1:8181", answer: "0.0.0.0:9084", expected: "0.0.0.0:9084", prompts: 1},
+		{name: "unattended defaults", unattended: true, expected: "0.0.0.0:8090"},
+		{name: "environment override", provided: "127.0.0.1:9085", expected: "127.0.0.1:9085"},
+		{name: "trim whitespace", provided: " 0.0.0.0:9086 ", expected: "0.0.0.0:9086"},
+		{name: "highest port", provided: "0.0.0.0:65535", expected: "0.0.0.0:65535"},
+		{name: "zero port", provided: "0.0.0.0:0", unattended: true, errorText: "listen address"},
+		{name: "out of range", provided: "0.0.0.0:65536", unattended: true, errorText: "listen address"},
+		{name: "missing port", provided: "0.0.0.0", unattended: true, errorText: "listen address"},
+		{name: "busy port", provided: "0.0.0.0:9087", unattended: true, busy: true, errorText: "already in use"},
+		{name: "own current port", saved: "0.0.0.0:9088", unattended: true, busy: true, expected: "0.0.0.0:9088"},
+	} {
+		testingT.Run(testCase.name, func(testingT *testing.T) {
+			workspace := testingT.TempDir()
+			envPath := filepath.Join(workspace, "quadstack.env")
+			promptsPath := filepath.Join(workspace, "prompts")
+			if err := os.WriteFile(envPath, []byte("QUADSTACK_LISTEN=\""+testCase.saved+"\"\n"), 0600); err != nil {
+				testingT.Fatal(err)
+			}
+			if err := os.WriteFile(promptsPath, nil, 0600); err != nil {
+				testingT.Fatal(err)
+			}
+			unattended := ""
+			if testCase.unattended {
+				unattended = "1"
+			}
+			busy := ""
+			if testCase.busy {
+				busy = "1"
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, bashPath, "-c", "set -Eeuo pipefail\n"+asks+environment+validation+harness+wrapper)
+			command.Dir = workspace
+			command.Env = append(os.Environ(),
+				"ENVF="+envPath,
+				"QS_LISTEN="+testCase.provided,
+				"QS_YES="+unattended,
+				"INSTALLER_TEST_PROMPTS="+promptsPath,
+				"INSTALLER_TEST_PROMPT="+prompt,
+				"INSTALLER_TEST_ANSWER="+testCase.answer,
+				"INSTALLER_TEST_BUSY="+busy,
+			)
+			output, err := command.CombinedOutput()
+			if testCase.errorText != "" {
+				if err == nil || !strings.Contains(string(output), testCase.errorText) {
+					testingT.Fatalf("expected error %q, got %v; output:\n%s", testCase.errorText, err, output)
+				}
+			} else if expected := "QUADSTACK_LISTEN=\"" + testCase.expected + "\""; err != nil || strings.TrimSpace(string(output)) != expected {
+				testingT.Fatalf("listen selection = %q, %v; want %q", output, err, expected)
+			}
+			prompts, err := os.ReadFile(promptsPath)
+			if err != nil {
+				testingT.Fatal(err)
+			}
+			if count := strings.Count(string(prompts), "\n"); count != testCase.prompts {
+				testingT.Errorf("prompt count = %d, want %d", count, testCase.prompts)
+			}
+			if testCase.prompts > 0 && !strings.Contains(string(prompts), "Listen address and port") {
+				testingT.Errorf("prompt does not explain address and port selection: %s", prompts)
+			}
+		})
+	}
+}

@@ -16,7 +16,7 @@ msg_info "Installing Podman"
 $STD apt install -y podman passt uidmap dbus-user-session acl whiptail
 msg_ok "Installed Podman"
 
-QS_FRESH=1 QS_LISTEN="${QS_LISTEN:-0.0.0.0:8090}" \
+QS_FRESH=1 \
   bash -c "$(curl -fsSL https://raw.githubusercontent.com/denMaier/quadstack/main/deploy/install.sh)"
 
 motd_ssh
