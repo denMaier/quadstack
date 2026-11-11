@@ -321,8 +321,18 @@ func TestClientAddr(t *testing.T) {
 	if got := clientAddr(r); got != "192.168.178.126" {
 		t.Fatalf("direct: %q", got)
 	}
-	r.Header.Set("X-Forwarded-For", "100.64.0.7, 10.0.0.1")
+	r.Header.Set("X-Forwarded-For", "100.64.0.7")
 	if got := clientAddr(r); got != "100.64.0.7 via 192.168.178.126" {
 		t.Fatalf("proxied: %q", got)
+	}
+	// A client-supplied X-Forwarded-For comes first; the proxy appends the real address
+	r.Header.Set("X-Forwarded-For", "10.0.0.1, 100.64.0.7")
+	if got := clientAddr(r); got != "100.64.0.7 via 192.168.178.126" {
+		t.Fatalf("forged first entry: %q", got)
+	}
+	r.Header.Set("X-Forwarded-For", "10.0.0.1")
+	r.Header.Add("X-Forwarded-For", "100.64.0.7")
+	if got := clientAddr(r); got != "100.64.0.7 via 192.168.178.126" {
+		t.Fatalf("repeated header: %q", got)
 	}
 }

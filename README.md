@@ -188,7 +188,7 @@ The server is named after the machine (`quadstack-<hostname>`), so you can add s
 
 The transport is streamable HTTP without sessions. If a reverse proxy is in front, it must pass the `Authorization` header through to `/mcp`. While a grant is ended, its client gets `401`. After **Reactivate**, Claude Code reconnects with the same token, either on its own or through `/mcp` → reconnect.
 
-**Where calls come from.** Each grant shows the address of its last call, and the audit log records the address of every call. Behind a reverse proxy this reads `<client> via <proxy>`, where the client address comes from `X-Forwarded-For`. An unfamiliar address during one of your grants is the sign of a copied token. Make the token useless outside your network by letting Zoraxy accept `/mcp` only from your LAN or VPN.
+**Where calls come from.** Each grant shows the address of its last call, and the audit log records the address of every call. Behind a reverse proxy this reads `<client> via <proxy>`, where the client address is the last `X-Forwarded-For` entry, the one the proxy added. Your proxy must append to that header, as most do, not pass on a client's own value unchanged. An unfamiliar address during one of your grants is the sign of a copied token. Make the token useless outside your network by letting Zoraxy accept `/mcp` only from your LAN or VPN.
 
 ### Permissions
 

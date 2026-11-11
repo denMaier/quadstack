@@ -425,15 +425,16 @@ func callerFrom(ctx context.Context) (mcpCaller, bool) {
 }
 
 // clientAddr is the address a request came from. Behind a reverse proxy the client's own
-// address is in X-Forwarded-For, which anyone can set, so the proxy is named too.
+// address is the last X-Forwarded-For entry, the one the proxy appended; the entries before it
+// come from the client and can be anything. The proxy is named too.
 func clientAddr(r *http.Request) string {
 	peer, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		peer = r.RemoteAddr
 	}
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		client, _, _ := strings.Cut(fwd, ",")
-		return strings.TrimSpace(client) + " via " + peer
+	if fwd := strings.Join(r.Header.Values("X-Forwarded-For"), ","); fwd != "" {
+		client := strings.TrimSpace(fwd[strings.LastIndex(fwd, ",")+1:])
+		return client + " via " + peer
 	}
 	return peer
 }
