@@ -1,0 +1,28 @@
+# A test environment: make dev, then open http://127.0.0.1:8090 and sign in as
+# admin@example.com / password. intruder@example.com (same password) is not allowed in.
+#
+# The host boots systemd and runs Quadstack as the real user service of a lingering account
+# "quadlets", with rootless Podman, from the binary built from this checkout. It shares Dex's
+# network namespace, so the browser and Quadstack reach Dex at the same http://127.0.0.1:5556.
+name: quadstack-dev
+
+services:
+  dex:
+    image: ghcr.io/dexidp/dex:v2.46.1
+    command: [dex, serve, /etc/dex/config.yaml]
+    volumes: [./dex.yaml:/etc/dex/config.yaml:ro]
+    ports: ["127.0.0.1:5556:5556", "127.0.0.1:8090:8090"]
+
+  # Container storage sits on a volume, as overlay on overlay does not work
+  host:
+    build: { context: .., dockerfile: dev/Dockerfile }
+    network_mode: service:dex
+    privileged: true
+    cgroup: host
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - home:/home
+    tmpfs: [/run, /run/lock, /tmp]
+
+volumes:
+  home:

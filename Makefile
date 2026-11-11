@@ -25,9 +25,23 @@ release: web
 	cd dist && shasum -a 256 $(NAME)_* > SHA256SUMS
 
 test:
+	test -z "$$(gofmt -l .)" || { gofmt -l .; exit 1; }
 	go vet ./...
 	go test ./...
 	cd web && npx svelte-check --tsconfig ./tsconfig.json
 
 clean:
 	rm -rf dist $(NAME) web/dist
+
+# A test environment with Dex and a systemd host running Quadstack as a rootless user service:
+# http://127.0.0.1:8090, admin@example.com / password. dev-reset also deletes the account's
+# Quadlets, history and containers.
+.PHONY: dev dev-down dev-reset
+dev: web
+	docker compose -f dev/compose.yaml up --build -d
+
+dev-down:
+	docker compose -f dev/compose.yaml down
+
+dev-reset:
+	docker compose -f dev/compose.yaml down -v

@@ -1,0 +1,53 @@
+#!/bin/sh
+# Runs at every boot of the dev host: the account "quadlets" with sample Quadlets (once), and
+# Quadstack as that account's user service from the managed unit, run from the image's binary
+set -eux
+
+id quadlets >/dev/null 2>&1 || useradd -m -s /bin/bash quadlets
+uid=$(id -u quadlets)
+home=/home/quadlets
+as_q() { runuser -u quadlets -- env XDG_RUNTIME_DIR=/run/user/$uid DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus "$@"; }
+
+dir=$home/.config/containers/systemd
+if [ ! -d "$dir" ]; then
+	runuser -u quadlets -- mkdir -p "$dir/web"
+	cat >"$dir/web/web.container" <<'Q'
+[Container]
+Image=docker.io/library/nginx:alpine
+EnvironmentFile=web.env
+Network=none
+Q
+	cat >"$dir/web/web.env" <<'Q'
+API_KEY=not-a-real-secret
+Q
+	cat >"$dir/worker.container" <<'Q'
+# Crashes on start: a failed unit to look at
+[Container]
+Image=docker.io/library/alpine:3.20
+Exec=sh -c 'echo "cannot connect to db" >&2; exit 3'
+Network=none
+Q
+	chown -R quadlets: "$home/.config"
+fi
+
+conf=$home/.config
+runuser -u quadlets -- mkdir -p "$conf/systemd/user/quadstack.service.d" "$conf/quadstack"
+install -o quadlets -m 0644 /usr/local/share/quadstack/quadstack.service "$conf/systemd/user/quadstack.service"
+printf '[Service]\nExecStart=\nExecStart=/usr/local/bin/quadstack\n' >"$conf/systemd/user/quadstack.service.d/dev.conf"
+cat >"$conf/quadstack/quadstack.env" <<'E'
+QUADSTACK_LISTEN=0.0.0.0:8090
+QUADSTACK_PUBLIC_URL=http://127.0.0.1:8090
+QUADSTACK_OIDC_ISSUER=http://127.0.0.1:5556/dex
+QUADSTACK_OIDC_CLIENT_ID=quadstack
+QUADSTACK_OIDC_CLIENT_SECRET=dev-secret
+QUADSTACK_ALLOWED_USERS=admin@example.com
+E
+chown -R quadlets: "$conf/systemd" "$conf/quadstack"
+chmod 600 "$conf/quadstack/quadstack.env"
+
+loginctl enable-linger quadlets
+while [ ! -S "/run/user/$uid/bus" ]; do sleep 1; done
+as_q systemctl --user daemon-reload
+as_q systemctl --user enable --now podman.socket
+as_q systemctl --user enable quadstack.service
+as_q systemctl --user restart quadstack.service

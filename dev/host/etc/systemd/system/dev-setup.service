@@ -1,0 +1,12 @@
+[Unit]
+Description=Set up the dev host and start Quadstack
+Wants=network-online.target
+After=network-online.target systemd-logind.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/dev-setup
+TimeoutStartSec=5min
+
+[Install]
+WantedBy=multi-user.target
