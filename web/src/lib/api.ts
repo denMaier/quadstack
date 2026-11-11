@@ -114,6 +114,7 @@ export type Grant = {
 }
 
 export type AuditEntry = { time: string; grant: string; label: string; from?: string; tool: string; args?: unknown; result: 'ok' | 'denied' | 'error'; error?: string }
+export type DeletedFile = { path: string; versions: number; time: string }
 
 export type McpInfo = { enabled: boolean; maxMinutes: number; endpoint: string; serverName: string; permissions: Perm[]; grants: Grant[]; audit: AuditEntry[] }
 
@@ -193,6 +194,11 @@ export const api = {
   validate: (path: string, content: string) => call<Validation>('POST', '/api/validate', { path, content }),
   history: (path: string) => call<Version[]>('GET', '/api/history?' + q({ path })),
   version: (path: string, id: string) => call<{ content: string }>('GET', '/api/history/version?' + q({ path, id })),
+  deletedFiles: () => call<DeletedFile[]>('GET', '/api/history/deleted'),
+  forgetHistory: (path: string) => call('DELETE', '/api/history?' + q({ path })),
+  // Recreates a deleted file from a saved version; force saves it although validation fails
+  restoreFile: (path: string, content: string, force = false) =>
+    call<{ applyError?: string }>('POST', '/api/file', { path, content, apply: 'reload', force }),
   images: () => call<Image[]>('GET', '/api/images'),
   prune: async (all: boolean) => ({ output: (await tracked('POST', '/api/images/prune', { all })).steps[0]?.detail ?? '' }),
   podmanResources: () => call<{ networks: PodmanNetwork[] | null; volumes: PodmanVolume[] | null }>('GET', '/api/podman-resources'),

@@ -47,6 +47,7 @@
       return
     }
     merge?.destroy()
+    merge = undefined
     // Left: the saved version, right: what is in the editor now
     merge = new MergeView({
       a: { doc: text, extensions: ext },
@@ -54,6 +55,20 @@
       parent: diffHost!,
       collapseUnchanged: { margin: 3, minSize: 6 },
     })
+  }
+
+  // For example to drop old credentials from an .env file's history
+  async function forget() {
+    if (!confirm(`Forget all ${versions.length} saved version(s) of ${path}? They cannot be restored afterwards.`)) return
+    try {
+      await api.forgetHistory(path)
+      merge?.destroy()
+      merge = undefined
+      versions = []
+      selected = undefined
+    } catch (e: any) {
+      error = e.message
+    }
   }
 </script>
 
@@ -80,6 +95,7 @@
     </div>
   {/if}
   <div class="row foot">
+    {#if versions.length}<button class="ghost danger" onclick={forget}>Forget history</button>{/if}
     <span class="grow"></span>
     <button onclick={() => dialog.close()}>Close</button>
     <button class="primary" disabled={!selected} onclick={() => onrestore(selected!, text)}>Load this version</button>

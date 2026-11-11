@@ -12,11 +12,12 @@ Quadstack runs as a user service of the account that owns the Quadlets, with no 
   - Each folder in the Quadlet directory is a stack.
   - At the top level, a `.pod` forms a stack together with the containers that set `Pod=` to it. Every other unit is a stack of its own.
   - Drop-ins (`name.container.d/*.conf`) and `.env` files are listed with their stack.
+  - Symlinked files and folders are not managed: Quadstack lists them in a warning and never writes through them. Their units still run, because quadlet follows links.
 - **Editor.** CodeMirror, with completion of Quadlet keys and sections.
   - **Check** runs Podman's own generator (`quadlet -dryrun -user`) on a scratch copy of the whole directory, so references between files resolve. A file Podman rejects is not saved unless you insist.
   - **Show generated unit** shows the systemd service Quadlet will produce.
   - **Save & reload** runs `daemon-reload`. **Deploy** also restarts the unit.
-- **History, without git.** Every save, move or delete first keeps the previous version under `~/.local/state/quadstack/history`, for the last 50 versions per file. You can diff any version against the editor and load it back.
+- **History, without git.** Every save, move or delete first keeps the previous version under `~/.local/state/quadstack/history`, for the last 50 versions per file. A moved file takes its history along. You can diff any version against the editor and load it back. Deleted files are listed on the start page, where you can restore them. **Forget** drops a file's saved versions for good, for example old credentials in an `.env` file.
 - **Units.** Start, stop or restart a whole stack or a single unit. You see their systemd state and whether they start at boot (`[Install]`).
 - **Activity.** Managed actions are queued on the server, with per-step progress, elapsed time, deadlines, results, errors and links to logs. Navigating away or reloading the page does not cancel a web action. Connection loss and timeouts are reported explicitly, not as success; unavailable unit state is shown as unknown rather than stopped.
 - **Logs.** A live `journalctl` view per stack or per unit.

@@ -52,6 +52,8 @@ func (s *Server) Routes() http.Handler {
 		"POST /api/validate":            s.validate,
 		"GET /api/history":              s.history,
 		"GET /api/history/version":      s.historyVersion,
+		"GET /api/history/deleted":      s.deletedFiles,
+		"DELETE /api/history":           s.forgetHistory,
 		"GET /api/images":               s.images,
 		"POST /api/images/prune":        s.pruneImages,
 		"POST /api/convert":             s.convert,
@@ -535,6 +537,29 @@ func (s *Server) historyVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"content": content})
+}
+
+// GET /api/history/deleted lists deleted files whose versions can still be restored
+func (s *Server) deletedFiles(w http.ResponseWriter, r *http.Request) {
+	ds, err := s.files.Deleted()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, ds)
+}
+
+// DELETE /api/history?path= forgets every saved version of a file
+func (s *Server) forgetHistory(w http.ResponseWriter, r *http.Request) {
+	rel, ok := relParam(w, r.URL.Query().Get("path"))
+	if !ok {
+		return
+	}
+	if err := s.files.Forget(rel); err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, map[string]bool{"ok": true})
 }
 
 func (s *Server) images(w http.ResponseWriter, r *http.Request) {

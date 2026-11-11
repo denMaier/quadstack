@@ -270,3 +270,29 @@ func TestDeleteReportsReloadFailure(t *testing.T) {
 		t.Fatalf("partial operation result was hidden: %+v", final)
 	}
 }
+
+func TestDeletedFilesAPI(t *testing.T) {
+	s, c := testServer(t)
+	h := s.Routes()
+	s.files.Write("web/web.env", "PASSWORD=old\n")
+	s.files.Delete("web/web.env")
+	os.Symlink(t.TempDir(), s.files.abs("linked"))
+
+	w := do(t, h, c, "GET", "/api/history/deleted", "", false)
+	var ds []DeletedFile
+	if json.Unmarshal(w.Body.Bytes(), &ds); len(ds) != 1 || ds[0].Path != "web/web.env" {
+		t.Fatalf("deleted: %s", w.Body)
+	}
+	if w := do(t, h, c, "DELETE", "/api/history?path=web/web.env", "", false); w.Code != 403 {
+		t.Fatalf("forgetting needs the CSRF header: %d", w.Code)
+	}
+	if w := do(t, h, c, "DELETE", "/api/history?path=web/web.env", "", true); w.Code != 200 {
+		t.Fatalf("forget: %d %s", w.Code, w.Body)
+	}
+	if w := do(t, h, c, "GET", "/api/history/deleted", "", false); strings.TrimSpace(w.Body.String()) != "[]" {
+		t.Fatalf("after forgetting: %s", w.Body)
+	}
+	if w := do(t, h, c, "GET", "/api/stacks", "", false); !strings.Contains(w.Body.String(), "symlinked files or folders") {
+		t.Fatalf("symlinks are reported: %s", w.Body)
+	}
+}

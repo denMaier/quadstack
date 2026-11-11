@@ -9,6 +9,7 @@
   import { catalog, loadSecrets } from './lib/catalog.svelte'
   import ImportDialog from './lib/ImportDialog.svelte'
   import Activity from './lib/Activity.svelte'
+  import DeletedFiles from './lib/DeletedFiles.svelte'
   import { activity, isActive } from './lib/operations.svelte'
 
   let me = $state<Me>()
@@ -166,6 +167,13 @@
           that set <code>Pod=</code> to it. Every other top-level unit is a stack of its own. Top-level networks and
           volumes are shared; see <a href="#/resources">Networks &amp; Volumes</a>.
         </p>
+        <DeletedFiles
+          onrestored={async (path: string) => {
+            await refresh()
+            const st = stacks.find((s) => s.files.some((f) => f.path === path))
+            if (st) go('/stack/' + encodeURIComponent(st.id))
+          }}
+        />
       </section>
     {/if}
   </main>

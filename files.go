@@ -343,17 +343,24 @@ func (fl *Files) Delete(rel string) error {
 	return os.Remove(fl.abs(rel))
 }
 
+// Move renames a file and takes its history along, so earlier versions stay with it
 func (fl *Files) Move(from, to string) error {
 	if err := refuseLink(fl.abs(from)); err != nil {
 		return err
 	}
-	if _, err := os.Stat(fl.abs(to)); err == nil {
+	if _, err := os.Lstat(fl.abs(to)); err == nil {
 		return fmt.Errorf("%s already exists", to)
+	}
+	if err := fl.snapshot(from); err != nil {
+		return fmt.Errorf("saving history: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(fl.abs(to)), 0o755); err != nil {
 		return err
 	}
-	return os.Rename(fl.abs(from), fl.abs(to))
+	if err := os.Rename(fl.abs(from), fl.abs(to)); err != nil {
+		return err
+	}
+	return fl.moveHistory(from, to)
 }
 
 // CreateStack makes a stack directory
@@ -404,10 +411,85 @@ func (fl *Files) snapshotContent(rel string, b []byte) error {
 	if err := os.WriteFile(filepath.Join(dir, id), b, 0o600); err != nil {
 		return err
 	}
+	fl.trimHistory(rel)
+	return nil
+}
+
+func (fl *Files) trimHistory(rel string) {
 	vs, _ := fl.History(rel)
 	for _, v := range vs[min(len(vs), historyKeep):] {
-		os.Remove(filepath.Join(dir, v.ID))
+		os.Remove(filepath.Join(fl.historyDir(rel), v.ID))
 	}
+}
+
+// moveHistory gives the versions of from to to. Version IDs are timestamps, so they merge
+// with any history to already had from an earlier file of that name.
+func (fl *Files) moveHistory(from, to string) error {
+	vs, err := fl.History(from)
+	if err != nil || len(vs) == 0 {
+		return err
+	}
+	dir := fl.historyDir(to)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	for _, v := range vs {
+		if err := os.Rename(filepath.Join(fl.historyDir(from), v.ID), filepath.Join(dir, v.ID)); err != nil {
+			return err
+		}
+	}
+	os.Remove(fl.historyDir(from))
+	fl.trimHistory(to)
+	return nil
+}
+
+// DeletedFile is a file that is gone but has saved versions
+type DeletedFile struct {
+	Path     string    `json:"path"`
+	Versions int       `json:"versions"`
+	Time     time.Time `json:"time"` // of the newest version, about when it was deleted
+}
+
+// Deleted lists the files that have a history but no longer exist, newest first
+func (fl *Files) Deleted() ([]DeletedFile, error) {
+	root := filepath.Join(fl.cfg.StateDir, "history")
+	out := []DeletedFile{}
+	err := filepath.WalkDir(root, func(abs string, d fs.DirEntry, err error) error {
+		if errors.Is(err, fs.ErrNotExist) && abs == root {
+			return filepath.SkipAll
+		}
+		if err != nil || !d.IsDir() || abs == root {
+			return err
+		}
+		r, _ := filepath.Rel(root, abs)
+		rel := filepath.ToSlash(r)
+		if !isManaged(path.Base(rel)) {
+			return nil
+		}
+		if _, err := os.Lstat(fl.abs(rel)); !errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if vs, _ := fl.History(rel); len(vs) > 0 {
+			out = append(out, DeletedFile{Path: rel, Versions: len(vs), Time: vs[0].Time})
+		}
+		return nil
+	})
+	sort.Slice(out, func(i, j int) bool { return out[i].Time.After(out[j].Time) })
+	return out, err
+}
+
+// Forget removes every saved version of a file, for example of an .env file with old credentials
+func (fl *Files) Forget(rel string) error {
+	vs, err := fl.History(rel)
+	if err != nil {
+		return err
+	}
+	for _, v := range vs {
+		if err := os.Remove(filepath.Join(fl.historyDir(rel), v.ID)); err != nil {
+			return err
+		}
+	}
+	os.Remove(fl.historyDir(rel))
 	return nil
 }
 

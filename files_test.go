@@ -73,6 +73,54 @@ func TestValidateWithQuadlet(t *testing.T) {
 	}
 }
 
+func TestMoveKeepsHistory(t *testing.T) {
+	fl := testFiles(t, "")
+	fl.Create("a.container", "v1")
+	fl.Write("a.container", "v2")
+	if err := fl.Move("a.container", "web/a.container"); err != nil {
+		t.Fatal(err)
+	}
+	if vs, _ := fl.History("a.container"); len(vs) != 0 {
+		t.Fatalf("history left behind: %v", vs)
+	}
+	vs, _ := fl.History("web/a.container")
+	if len(vs) != 2 {
+		t.Fatalf("versions after move = %d, want 2 (v1, and v2 kept by the move)", len(vs))
+	}
+	if c, _ := fl.ReadVersion("web/a.container", vs[0].ID); c != "v2" {
+		t.Fatalf("newest version = %q", c)
+	}
+	if err := fl.Move("web/a.container", "web/a.container"); err == nil {
+		t.Fatal("moving onto an existing file must fail")
+	}
+}
+
+func TestDeletedAndForget(t *testing.T) {
+	fl := testFiles(t, "")
+	fl.Create("web/web.env", "PASSWORD=old")
+	fl.Create("web/web.container", "[Container]\n")
+	if err := fl.Delete("web/web.env"); err != nil {
+		t.Fatal(err)
+	}
+	ds, err := fl.Deleted()
+	if err != nil || len(ds) != 1 || ds[0].Path != "web/web.env" || ds[0].Versions != 1 {
+		t.Fatalf("deleted = %+v, %v", ds, err)
+	}
+	if err := fl.Forget("web/web.env"); err != nil {
+		t.Fatal(err)
+	}
+	if ds, _ := fl.Deleted(); len(ds) != 0 {
+		t.Fatalf("forgotten history still listed: %+v", ds)
+	}
+	if _, err := os.Stat(fl.historyDir("web/web.env")); !os.IsNotExist(err) {
+		t.Fatal("the history directory should be gone")
+	}
+	// Without any history at all, the list is empty, not an error
+	if ds, err := testFiles(t, "").Deleted(); err != nil || ds == nil || len(ds) != 0 {
+		t.Fatalf("no history: %v %v", ds, err)
+	}
+}
+
 func TestSymlinksAreReportedNotManaged(t *testing.T) {
 	fl := testFiles(t, "")
 	outside := filepath.Join(t.TempDir(), "real.container")
