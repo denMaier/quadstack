@@ -220,6 +220,17 @@ func (fl *Files) Validate(ctx context.Context, rel string, content *string) Vali
 	runErr := cmd.Run()
 
 	v := Validation{}
+	// Only an ordinary non-zero exit is quadlet's verdict; a timeout, a crash or a binary that
+	// cannot run says nothing about the file, so it must not let the save through
+	var exitErr *exec.ExitError
+	switch {
+	case ctx.Err() != nil:
+		v.Output = "quadlet did not finish: " + ctx.Err().Error()
+		return v
+	case runErr != nil && (!errors.As(runErr, &exitErr) || exitErr.ExitCode() < 0):
+		v.Output = "running quadlet: " + runErr.Error()
+		return v
+	}
 	var problems []string
 	// Name files relative to the Quadlet directory instead of the scratch copy
 	v.Output, problems = quadletMessages(strings.ReplaceAll(stderr.String(), tmp+string(filepath.Separator), ""), rel)
