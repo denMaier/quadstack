@@ -104,7 +104,13 @@ systemctl --user enable --now podman.socket
 systemctl --user enable --now quadstack
 ```
 
-Use `quadstack_linux_arm64` on ARM. For a system account without a login shell, run these with `sudo -iu <user>`. If `systemctl --user` can't find the bus, use `sudo machinectl shell <user>@`.
+Use `quadstack_linux_arm64` on ARM. `SHA256SUMS` only shows that a download is complete, as it comes from the same place as the binary. To check that GitHub Actions built the binary from this repository, use the GitHub CLI:
+
+```sh
+gh attestation verify ~/.local/bin/quadstack --repo denMaier/quadstack
+```
+
+For a system account without a login shell, run these with `sudo -iu <user>`. If `systemctl --user` can't find the bus, use `sudo machinectl shell <user>@`.
 
 ### Logs of system accounts
 
