@@ -241,6 +241,7 @@ Every call goes to `~/.local/state/quadstack/mcp-audit.jsonl` and to the **AI ac
 - Changing requests need a same-site session cookie and a custom header. Websockets only accept the origin of `QUADSTACK_PUBLIC_URL`.
 - An MCP grant acts with the account's rights within its rules. Exec and Write on a stack are effectively full control of that stack's containers; Write can also bind-mount any path the account can read.
 - Review written Quadlets before starting or restarting them: their service directives can execute commands as the Quadstack account. A write-only grant does not prevent another operator, a dependency, or an automatic start from starting a changed unit.
+- `quadstack.service` restricts Quadstack's own processes (no new privileges or setuid, no namespaces, no writable executable memory). It does not restrict the containers, which systemd starts.
 - Quadstack is meant for a LAN or VPN. Don't expose it to the internet without more protection in front.
 
 ## Coming from another manager

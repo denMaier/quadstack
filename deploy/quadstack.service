@@ -2,7 +2,12 @@
 #   ~/.config/systemd/user/quadstack.service
 # then: systemctl --user daemon-reload && systemctl --user enable --now quadstack
 # The account needs lingering (loginctl enable-linger <user>) to run without a login.
-# No sandboxing options: rootless Podman needs the setuid newuidmap/newgidmap helpers.
+#
+# Quadstack starts containers through systemd and Podman's API socket, so its own processes
+# (it, quadlet, journalctl, podlet) need no setuid helpers or namespaces. The options below
+# work in a user unit without privileges. Options that need a mount namespace (ProtectSystem=,
+# PrivateTmp=, …) are left out: in a user unit they imply PrivateUsers=, which would change
+# how the account appears to D-Bus and the Podman socket.
 [Unit]
 Description=Quadstack, a web UI for rootless Quadlets
 After=network-online.target podman.socket
@@ -13,6 +18,14 @@ ExecStart=%h/.local/bin/quadstack
 EnvironmentFile=%h/.config/quadstack/quadstack.env
 Restart=on-failure
 RestartSec=5
+UMask=0077
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=default.target
