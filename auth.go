@@ -25,6 +25,8 @@ const (
 	flowCookie    = "qs_oidc"
 	sessionTTL    = 12 * time.Hour
 	flowTTL       = 10 * time.Minute
+	// Browsers keep cookies up to 4096 bytes including name and attributes
+	maxCookieValue = 3800
 )
 
 // Authenticator handles the OIDC login and signed session cookies
@@ -277,12 +279,20 @@ func (a *Authenticator) HandleCallback(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = firstNonEmpty(cl.PreferredUsername, cl.Email, cl.Sub)
 	}
-	token, err := sign(a.cfg.SessionSecret, sessionData{
-		Sub:     cl.Sub,
-		Name:    name,
-		Expires: time.Now().Add(sessionTTL).Unix(),
-		IDToken: rawID,
-	})
+	if r := []rune(name); len(r) > 80 {
+		name = string(r[:80])
+	}
+	sess := sessionData{Sub: cl.Sub, Name: name, Expires: time.Now().Add(sessionTTL).Unix(), IDToken: rawID}
+	token, err := sign(a.cfg.SessionSecret, sess)
+	// Browsers silently drop cookies over 4 KB, which would make sign-in loop. The ID token
+	// (large with many groups) only serves as a logout hint, so it goes first.
+	if err == nil && len(token) > maxCookieValue {
+		sess.IDToken = ""
+		token, err = sign(a.cfg.SessionSecret, sess)
+	}
+	if err == nil && len(token) > maxCookieValue {
+		err = errors.New("the session is too large for a cookie")
+	}
 	if err != nil {
 		fail(http.StatusInternalServerError, err.Error())
 		return
@@ -299,13 +309,17 @@ func sameSubject(idTokenSubject, userInfoSubject string) bool {
 func (a *Authenticator) HandleLogout(w http.ResponseWriter, r *http.Request) {
 	sess, _ := a.Session(r)
 	a.clearCookie(w, sessionCookie)
-	// RP-initiated logout when the provider supports it
-	if p, err := a.getProvider(); err == nil && sess.IDToken != "" {
+	// RP-initiated logout when the provider supports it; without the ID token as a hint, the
+	// client ID identifies Quadstack and the provider may ask for confirmation
+	if p, err := a.getProvider(); err == nil && sess.Sub != "" {
 		var meta struct {
 			EndSession string `json:"end_session_endpoint"`
 		}
 		if p.Claims(&meta) == nil && meta.EndSession != "" {
-			q := url.Values{"id_token_hint": {sess.IDToken}, "post_logout_redirect_uri": {a.cfg.PublicURL + "/"}}
+			q := url.Values{"client_id": {a.cfg.ClientID}, "post_logout_redirect_uri": {a.cfg.PublicURL + "/"}}
+			if sess.IDToken != "" {
+				q.Set("id_token_hint", sess.IDToken)
+			}
 			http.Redirect(w, r, meta.EndSession+"?"+q.Encode(), http.StatusFound)
 			return
 		}
