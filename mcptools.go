@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"maps"
 	"os"
 	"os/exec"
@@ -50,25 +51,53 @@ func scopeFor(inv *Inventory, rel string) string {
 	return ""
 }
 
+func fileIn(inv *Inventory, rel string) *QFile {
+	for _, st := range inv.Stacks {
+		for _, f := range st.Files {
+			if f.Path == rel {
+				return f
+			}
+		}
+	}
+	for _, r := range inv.Resources {
+		if r.Path == rel {
+			return r.QFile
+		}
+	}
+	return nil
+}
+
+// scopeOfUnit names the stack whose file defines a unit. Two files can claim the same unit name
+// (ServiceName=, or the same file name in two folders); such a unit belongs to no single stack,
+// so a grant scoped to one of them cannot reach the other's unit.
 func scopeOfUnit(inv *Inventory, unit string) string {
+	var scopes []string
+	claim := func(scope string) {
+		if !slices.Contains(scopes, scope) {
+			scopes = append(scopes, scope)
+		}
+	}
 	for _, st := range inv.Stacks {
 		for _, f := range st.Files {
 			if f.Unit == unit {
-				return st.ID
+				claim(st.ID)
 			}
 		}
 	}
 	for _, r := range inv.Resources {
 		if r.Unit == unit {
-			return firstNonEmpty(r.Stack, scopeShared)
+			claim(firstNonEmpty(r.Stack, scopeShared))
 		}
 	}
-	return ""
+	if len(scopes) != 1 {
+		return ""
+	}
+	return scopes[0]
 }
 
 func describeScope(scope string) string {
 	if scope == "" {
-		return "a file outside any stack"
+		return "something outside a single stack (needs All stacks)"
 	}
 	return "stack " + scope
 }
@@ -119,7 +148,13 @@ func add[In any](t *toolset, perms []string, tool *mcp.Tool, h func(ctx context.
 		return
 	}
 	mcp.AddTool(t.srv, tool, func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, any, error) {
-		entry := AuditEntry{Time: time.Now(), Grant: t.grant.ID, Label: t.grant.Label, From: t.from, Tool: tool.Name, Args: auditArgs(in), Result: "ok"}
+		entry := AuditEntry{Time: time.Now(), Call: randomHex(8), Grant: t.grant.ID, Label: t.grant.Label, From: t.from, Tool: tool.Name, Args: auditArgs(in), Result: "started"}
+		// No audit record, no call
+		if err := t.s.audit.Write(entry); err != nil {
+			log.Printf("MCP %s refused for grant %s: writing the audit log: %v", tool.Name, t.grant.ID, err)
+			return nil, nil, errors.New("the audit log cannot be written, so this call was refused")
+		}
+		entry.Result = "ok"
 		g, ok := t.s.grants.Get(t.grant.ID)
 		var out any
 		var err error
@@ -144,7 +179,9 @@ func add[In any](t *toolset, perms []string, tool *mcp.Tool, h func(ctx context.
 				entry.Result = "denied"
 			}
 		}
-		t.s.audit.Write(entry)
+		if werr := t.s.audit.Write(entry); werr != nil {
+			log.Printf("MCP %s for grant %s ran, but its result was not audited: %v", tool.Name, t.grant.ID, werr)
+		}
 		return nil, out, err
 	})
 }
@@ -359,6 +396,13 @@ func (t *toolset) register() {
 		if err := need(g, "files.write", scope); err != nil {
 			return "", err
 		}
+		// Two files that generate the same unit compete for it, so a stack-scoped grant must not
+		// write a file whose unit another stack defines
+		if f := fileIn(after, rel); f != nil && f.Unit != "" && scopeOfUnit(after, f.Unit) == "" {
+			if err := need(g, "files.write", scopeAll); err != nil {
+				return "", fmt.Errorf("%s is also defined outside this stack: %w", f.Unit, err)
+			}
+		}
 		if err := checkWriteDirectory(g, inv, rel, scope); err != nil {
 			return "", err
 		}
@@ -439,17 +483,8 @@ func (t *toolset) register() {
 				return nil, err
 			}
 			var unit string
-			for _, st := range inv.Stacks {
-				for _, f := range st.Files {
-					if f.Path == rel {
-						unit = f.Unit
-					}
-				}
-			}
-			for _, r := range inv.Resources {
-				if r.Path == rel {
-					unit = r.Unit
-				}
+			if f := fileIn(inv, rel); f != nil {
+				unit = f.Unit
 			}
 			var tasks []operationTask
 			if in.Stop && unit != "" {

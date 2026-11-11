@@ -317,14 +317,18 @@ func (gs *Grants) Get(id string) (Grant, bool) {
 
 /* Audit log: one JSON object per line in StateDir/mcp-audit.jsonl */
 
+// A call is recorded twice: as "started" before it runs, which must succeed for it to run at
+// all, and with its result afterwards. A "started" entry without a result means the call's
+// outcome was never recorded, for example because Quadstack stopped during it.
 type AuditEntry struct {
 	Time   time.Time       `json:"time"`
+	Call   string          `json:"call,omitempty"` // links a call's two entries
 	Grant  string          `json:"grant"`
 	Label  string          `json:"label"`
 	From   string          `json:"from,omitempty"` // the caller's address
 	Tool   string          `json:"tool"`
 	Args   json.RawMessage `json:"args,omitempty"`
-	Result string          `json:"result"` // ok, denied or error
+	Result string          `json:"result"` // started, ok, denied or error
 	Error  string          `json:"error,omitempty"`
 }
 
@@ -335,22 +339,31 @@ type Audit struct {
 	path string
 }
 
-func (a *Audit) Write(e AuditEntry) {
+// Write appends an entry and syncs it to disk
+func (a *Audit) Write(e AuditEntry) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if st, err := os.Stat(a.path); err == nil && st.Size() > auditMaxSize {
-		os.Rename(a.path, a.path+".1")
+		if err := os.Rename(a.path, a.path+".1"); err != nil {
+			return err
+		}
 	}
 	f, err := os.OpenFile(a.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
-		return
+		return err
 	}
-	defer f.Close()
-	b, _ := json.Marshal(e)
-	f.Write(append(b, '\n'))
+	b, err := json.Marshal(e)
+	if err == nil {
+		_, err = f.Write(append(b, '\n'))
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	return errors.Join(err, f.Close())
 }
 
-// Recent returns up to n entries, newest first
+// Recent returns up to n calls, newest first: each call's result, or its "started" entry
+// when no result was recorded
 func (a *Audit) Recent(n int) []AuditEntry {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -369,6 +382,14 @@ func (a *Audit) Recent(n int) []AuditEntry {
 		}
 	}
 	slices.Reverse(out)
+	finished := map[string]bool{}
+	out = slices.DeleteFunc(out, func(e AuditEntry) bool {
+		if e.Result != "started" {
+			finished[e.Call] = e.Call != ""
+			return false
+		}
+		return finished[e.Call]
+	})
 	return out[:min(n, len(out))]
 }
 

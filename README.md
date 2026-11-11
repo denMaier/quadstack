@@ -228,10 +228,11 @@ A new file in a new folder belongs to a stack that does not exist yet, so creati
 - **Stack directories.** A stack-scoped write must be directly inside that existing stack's directory. Top-level stacks share the Quadlet root, but the file must also belong to an allowed stack. Creating a stack in a new directory requires Write on All stacks.
 - **No symlink traversal.** MCP file reads, writes and deletes refuse symlinked files and directories.
 - **Units and containers.** Units and containers are matched to the stack whose file defines them. A container that no Quadlet file started needs Exec on **All stacks**.
+- **One unit, one stack.** When files in two stacks generate the same unit (the same file name in two folders, or `ServiceName=`), that unit belongs to neither stack and needs **All stacks**. A stack-scoped grant cannot write a file that would generate another stack's unit.
 
 ### Audit log
 
-Every call goes to `~/.local/state/quadstack/mcp-audit.jsonl` and to the **AI access** page, with the grant, the caller's address, the tool, the arguments and the result. The result is `ok`, `denied` or `error`. File contents are replaced by their size and a hash, and secret values are left out. The log rotates to `mcp-audit.jsonl.1` at 5 MB. Grants are kept in `mcp-grants.json` in the same directory until you delete them.
+Every call goes to `~/.local/state/quadstack/mcp-audit.jsonl` and to the **AI access** page, with the grant, the caller's address, the tool, the arguments and the result. A call is recorded before it runs; if that record cannot be written, the call is refused. Its result follows when it finishes: `ok`, `denied` or `error`. A call shown with **no result** was recorded but never finished, for example because Quadstack stopped during it; check what it did. File contents are replaced by their size and a hash, and secret values are left out. The log rotates to `mcp-audit.jsonl.1` at 5 MB. Grants are kept in `mcp-grants.json` in the same directory until you delete them.
 
 ## Security notes
 

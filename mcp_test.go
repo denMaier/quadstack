@@ -238,6 +238,83 @@ func TestMCPRejectsSymlinks(t *testing.T) {
 	}
 }
 
+func TestMCPUnitCollisionsAndAudit(t *testing.T) {
+	s, c := testServer(t)
+	h := s.Routes()
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+	s.files.Write("aaa/app.container", "[Container]\nImage=app\n")
+	s.files.Write("bbb/victim.container", "[Container]\nImage=victim\n")
+	var restarted []string
+	s.systemd = &fakeSystemdClient{action: func(_ context.Context, unit, _ string) error {
+		restarted = append(restarted, unit)
+		return nil
+	}}
+
+	w := do(t, h, c, "POST", "/api/mcp/grants", `{"label":"a","minutes":30,"rules":{"files.write":["d/aaa"],"units.restart":["d/aaa"]}}`, true)
+	var created struct{ Token string }
+	json.Unmarshal(w.Body.Bytes(), &created)
+	cs, err := mcpSession(t, ts.URL, created.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	// A file that would generate another stack's unit is refused
+	if out, isErr := callText(t, cs, "write_file", map[string]any{"path": "aaa/victim.container", "content": "[Container]\nImage=evil\n", "apply": "none"}); !isErr || !strings.Contains(out, "victim.service") {
+		t.Fatalf("colliding write: %s", out)
+	}
+	if out, isErr := callText(t, cs, "write_file", map[string]any{"path": "aaa/other.container", "content": "[Container]\nImage=evil\n[Service]\n", "apply": "none"}); isErr {
+		t.Fatalf("ordinary write: %s", out)
+	}
+	if out, isErr := callText(t, cs, "write_file", map[string]any{"path": "aaa/other.container", "content": "[Container]\nImage=evil\nServiceName=victim\n", "apply": "none"}); !isErr {
+		t.Fatalf("ServiceName= onto another stack's unit: %s", out)
+	}
+	// Even when a collision exists already, a stack-scoped grant cannot reach the other stack's unit
+	s.files.Write("aaa/victim.container", "[Container]\nImage=evil\n")
+	if out, isErr := callText(t, cs, "unit_action", map[string]any{"unit": "victim.service", "action": "restart"}); !isErr || !strings.Contains(out, "All stacks") {
+		t.Fatalf("restart of a unit two stacks claim: %s", out)
+	}
+	if out, isErr := callText(t, cs, "unit_action", map[string]any{"unit": "app.service", "action": "restart"}); isErr || !slices.Equal(restarted, []string{"app.service"}) {
+		t.Fatalf("restart own unit: %s %v", out, restarted)
+	}
+
+	// Each call is recorded before it runs; the list shows one entry per call
+	raw, _ := os.ReadFile(s.audit.path)
+	if n := strings.Count(string(raw), `"result":"started"`); n != 5 {
+		t.Fatalf("started entries = %d, want 5", n)
+	}
+	for _, e := range s.audit.Recent(50) {
+		if e.Result == "started" {
+			t.Fatalf("a finished call is listed as started: %+v", e)
+		}
+	}
+
+	// No audit record, no call
+	s.audit.path = t.TempDir()
+	if out, isErr := callText(t, cs, "unit_action", map[string]any{"unit": "app.service", "action": "restart"}); !isErr || !strings.Contains(out, "audit log") {
+		t.Fatalf("call without an audit log: %s", out)
+	}
+	if len(restarted) != 1 {
+		t.Fatalf("the unaudited call ran: %v", restarted)
+	}
+}
+
+func TestAuditListsUnfinishedCalls(t *testing.T) {
+	a := &Audit{path: filepath.Join(t.TempDir(), "audit.jsonl")}
+	a.Write(AuditEntry{Call: "1", Tool: "exec", Result: "started"})
+	a.Write(AuditEntry{Call: "2", Tool: "read_file", Result: "started"})
+	a.Write(AuditEntry{Call: "2", Tool: "read_file", Result: "ok"})
+	a.Write(AuditEntry{Tool: "old", Result: "ok"}) // written before calls had IDs
+	var got []string
+	for _, e := range a.Recent(10) {
+		got = append(got, e.Tool+":"+e.Result)
+	}
+	if !slices.Equal(got, []string{"old:ok", "read_file:ok", "exec:started"}) {
+		t.Fatalf("recent = %v", got)
+	}
+}
+
 func TestClientAddr(t *testing.T) {
 	r := httptest.NewRequest("POST", "/mcp", nil)
 	r.RemoteAddr = "192.168.178.126:51234"

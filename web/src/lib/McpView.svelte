@@ -245,7 +245,11 @@
               <td><code>{e.tool}</code></td>
               <td class="small"><code class="args">{e.args ? JSON.stringify(e.args) : ''}</code></td>
               <td class="small">
-                <span class={'badge ' + e.result}>{e.result}</span>
+                <span
+                  class={'badge ' + e.result}
+                  title={e.result === 'started' ? 'No result was recorded: Quadstack may have stopped during this call. Check what it did.' : undefined}
+                  >{e.result === 'started' ? 'no result' : e.result}</span
+                >
                 {#if e.error}<div class="muted err">{e.error}</div>{/if}
               </td>
             </tr>
@@ -412,7 +416,8 @@
     background: color-mix(in srgb, var(--ok) 18%, transparent);
     color: var(--ok);
   }
-  .badge.denied {
+  .badge.denied,
+  .badge.started {
     background: color-mix(in srgb, var(--warn) 20%, transparent);
     color: var(--warn);
   }

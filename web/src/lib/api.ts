@@ -113,7 +113,7 @@ export type Grant = {
   rules: Rules
 }
 
-export type AuditEntry = { time: string; grant: string; label: string; from?: string; tool: string; args?: unknown; result: 'ok' | 'denied' | 'error'; error?: string }
+export type AuditEntry = { time: string; grant: string; label: string; from?: string; tool: string; args?: unknown; result: 'started' | 'ok' | 'denied' | 'error'; error?: string }
 export type DeletedFile = { path: string; versions: number; time: string }
 
 export type McpInfo = { enabled: boolean; maxMinutes: number; endpoint: string; serverName: string; permissions: Perm[]; grants: Grant[]; audit: AuditEntry[] }
