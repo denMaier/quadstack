@@ -10,35 +10,35 @@ import (
 	"time"
 )
 
-func installerSection(testingT *testing.T, installer, start, end string) string {
-	testingT.Helper()
+func installerSection(t *testing.T, installer, start, end string) string {
+	t.Helper()
 	startIndex := strings.Index(installer, start)
 	if startIndex < 0 {
-		testingT.Fatalf("installer section %q not found", start)
+		t.Fatalf("installer section %q not found", start)
 	}
 	section := installer[startIndex:]
 	endIndex := strings.Index(section, end)
 	if endIndex < 0 {
-		testingT.Fatalf("installer section end %q not found", end)
+		t.Fatalf("installer section end %q not found", end)
 	}
 	return section[:endIndex]
 }
 
-func TestInstallerUpdate(testingT *testing.T) {
+func TestInstallerUpdate(t *testing.T) {
 	bashPath, err := exec.LookPath("bash")
 	if err != nil {
-		testingT.Skip("bash is unavailable")
+		t.Skip("bash is unavailable")
 	}
 	installer, err := os.ReadFile("deploy/install.sh")
 	if err != nil {
-		testingT.Fatal(err)
+		t.Fatal(err)
 	}
 	unit, err := os.ReadFile("deploy/quadstack.service")
 	if err != nil {
-		testingT.Fatal(err)
+		t.Fatal(err)
 	}
-	helpers := installerSection(testingT, string(installer), "user_home() {", "# podlet turns")
-	update := installerSection(testingT, string(installer), "if [[ -n $EXISTING ]]; then", "### Podman")
+	helpers := installerSection(t, string(installer), "user_home() {", "# podlet turns")
+	update := installerSection(t, string(installer), "if [[ -n $EXISTING ]]; then", "### Podman")
 	const harness = `
 REPO=denMaier/quadstack
 EXISTING=quadlets
@@ -105,8 +105,8 @@ wait_active() { printf 'active %s\n' "$1" >>"$INSTALLER_TEST_EVENTS"; }
 		{name: "reload failure", failure: "reload", eventCount: 4, updated: true, attempts: 1},
 		{name: "socket failure", failure: "socket", eventCount: 5, updated: true, attempts: 1},
 	} {
-		testingT.Run(testCase.name, func(testingT *testing.T) {
-			workspace := testingT.TempDir()
+		t.Run(testCase.name, func(t *testing.T) {
+			workspace := t.TempDir()
 			home := filepath.Join(workspace, "quadlets home")
 			eventsPath := filepath.Join(workspace, "events")
 			unitPath := filepath.Join(home, ".config/systemd/user/quadstack.service")
@@ -120,18 +120,18 @@ wait_active() { printf 'active %s\n' "$1" >>"$INSTALLER_TEST_EVENTS"; }
 			for relativePath, content := range preserved {
 				path := filepath.Join(home, relativePath)
 				if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-					testingT.Fatal(err)
+					t.Fatal(err)
 				}
 				if err := os.WriteFile(path, []byte(content), 0600); err != nil {
-					testingT.Fatal(err)
+					t.Fatal(err)
 				}
 			}
 			const oldUnit = "[Unit]\nDescription=old service\n"
 			if err := os.WriteFile(unitPath, []byte(oldUnit), 0644); err != nil {
-				testingT.Fatal(err)
+				t.Fatal(err)
 			}
 			if err := os.WriteFile(fixturePath, unit, 0644); err != nil {
-				testingT.Fatal(err)
+				t.Fatal(err)
 			}
 			for attempt := 0; attempt < testCase.attempts; attempt++ {
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -147,56 +147,56 @@ wait_active() { printf 'active %s\n' "$1" >>"$INSTALLER_TEST_EVENTS"; }
 				output, err := command.CombinedOutput()
 				cancel()
 				if (err != nil) != (testCase.failure != "") {
-					testingT.Fatalf("update error = %v, expected failure %q; output:\n%s", err, testCase.failure, output)
+					t.Fatalf("update error = %v, expected failure %q; output:\n%s", err, testCase.failure, output)
 				}
 			}
 			events, err := os.ReadFile(eventsPath)
 			if err != nil {
-				testingT.Fatal(err)
+				t.Fatal(err)
 			}
 			wantEvents := strings.Repeat(strings.Join(expectedEvents[:testCase.eventCount], "\n")+"\n", testCase.attempts)
 			if string(events) != wantEvents {
-				testingT.Fatalf("update events:\n%s\nwant:\n%s", events, wantEvents)
+				t.Fatalf("update events:\n%s\nwant:\n%s", events, wantEvents)
 			}
 			installedUnit, err := os.ReadFile(unitPath)
 			if err != nil {
-				testingT.Fatal(err)
+				t.Fatal(err)
 			}
 			wantUnit := oldUnit
 			if testCase.updated {
 				wantUnit = string(unit)
 			}
 			if string(installedUnit) != wantUnit {
-				testingT.Fatalf("installed unit = %q, want %q", installedUnit, wantUnit)
+				t.Fatalf("installed unit = %q, want %q", installedUnit, wantUnit)
 			}
 			for relativePath, content := range preserved {
 				actual, err := os.ReadFile(filepath.Join(home, relativePath))
 				if err != nil || string(actual) != content {
-					testingT.Errorf("%s was not preserved: %q, %v", relativePath, actual, err)
+					t.Errorf("%s was not preserved: %q, %v", relativePath, actual, err)
 				}
 			}
 		})
 	}
 }
 
-func TestInstallerListenSelection(testingT *testing.T) {
+func TestInstallerListenSelection(t *testing.T) {
 	bashPath, err := exec.LookPath("bash")
 	if err != nil {
-		testingT.Skip("bash is unavailable")
+		t.Skip("bash is unavailable")
 	}
 	installer, err := os.ReadFile("deploy/install.sh")
 	if err != nil {
-		testingT.Fatal(err)
+		t.Fatal(err)
 	}
 	proxmox, err := os.ReadFile("deploy/proxmox/install/quadstack-install.sh")
 	if err != nil {
-		testingT.Fatal(err)
+		t.Fatal(err)
 	}
-	asks := installerSection(testingT, string(installer), "ask() {", "ask_secret() {")
-	environment := installerSection(testingT, string(installer), "envget() {", "resolve_version() {")
-	validation := installerSection(testingT, string(installer), "check_listen() {", "check_hours() {")
-	prompt := installerSection(testingT, string(installer), "  ask_valid check_listen", "\n\n")
-	wrapper := installerSection(testingT, string(proxmox), "QS_FRESH=1", "\nmotd_ssh")
+	asks := installerSection(t, string(installer), "ask() {", "ask_secret() {")
+	environment := installerSection(t, string(installer), "envget() {", "resolve_version() {")
+	validation := installerSection(t, string(installer), "check_listen() {", "check_hours() {")
+	prompt := installerSection(t, string(installer), "  ask_valid check_listen", "\n\n")
+	wrapper := installerSection(t, string(proxmox), "QS_FRESH=1", "\nmotd_ssh")
 	const harness = `
 BT=Quadstack
 tty_ui() { return 0; }
@@ -244,15 +244,15 @@ bash() {
 		{name: "busy port", provided: "0.0.0.0:9087", unattended: true, busy: true, errorText: "already in use"},
 		{name: "own current port", saved: "0.0.0.0:9088", unattended: true, busy: true, expected: "0.0.0.0:9088"},
 	} {
-		testingT.Run(testCase.name, func(testingT *testing.T) {
-			workspace := testingT.TempDir()
+		t.Run(testCase.name, func(t *testing.T) {
+			workspace := t.TempDir()
 			envPath := filepath.Join(workspace, "quadstack.env")
 			promptsPath := filepath.Join(workspace, "prompts")
 			if err := os.WriteFile(envPath, []byte("QUADSTACK_LISTEN=\""+testCase.saved+"\"\n"), 0600); err != nil {
-				testingT.Fatal(err)
+				t.Fatal(err)
 			}
 			if err := os.WriteFile(promptsPath, nil, 0600); err != nil {
-				testingT.Fatal(err)
+				t.Fatal(err)
 			}
 			unattended := ""
 			if testCase.unattended {
@@ -278,20 +278,20 @@ bash() {
 			output, err := command.CombinedOutput()
 			if testCase.errorText != "" {
 				if err == nil || !strings.Contains(string(output), testCase.errorText) {
-					testingT.Fatalf("expected error %q, got %v; output:\n%s", testCase.errorText, err, output)
+					t.Fatalf("expected error %q, got %v; output:\n%s", testCase.errorText, err, output)
 				}
 			} else if expected := "QUADSTACK_LISTEN=\"" + testCase.expected + "\""; err != nil || strings.TrimSpace(string(output)) != expected {
-				testingT.Fatalf("listen selection = %q, %v; want %q", output, err, expected)
+				t.Fatalf("listen selection = %q, %v; want %q", output, err, expected)
 			}
 			prompts, err := os.ReadFile(promptsPath)
 			if err != nil {
-				testingT.Fatal(err)
+				t.Fatal(err)
 			}
 			if count := strings.Count(string(prompts), "\n"); count != testCase.prompts {
-				testingT.Errorf("prompt count = %d, want %d", count, testCase.prompts)
+				t.Errorf("prompt count = %d, want %d", count, testCase.prompts)
 			}
 			if testCase.prompts > 0 && !strings.Contains(string(prompts), "Listen address and port") {
-				testingT.Errorf("prompt does not explain address and port selection: %s", prompts)
+				t.Errorf("prompt does not explain address and port selection: %s", prompts)
 			}
 		})
 	}

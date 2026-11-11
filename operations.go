@@ -69,11 +69,11 @@ func copyOperation(run *operationRun) Operation {
 	return operation
 }
 
-func (operations *Operations) Submit(ctx context.Context, label, stack string, tasks []operationTask, continueOnError bool) (Operation, error) {
-	operations.mu.Lock()
-	defer operations.mu.Unlock()
+func (ops *Operations) Submit(ctx context.Context, label, stack string, tasks []operationTask, continueOnError bool) (Operation, error) {
+	ops.mu.Lock()
+	defer ops.mu.Unlock()
 	active := 0
-	for _, run := range operations.history {
+	for _, run := range ops.history {
 		if run.Finished == nil {
 			active++
 		}
@@ -94,18 +94,18 @@ func (operations *Operations) Submit(ctx context.Context, label, stack string, t
 	for index, task := range tasks {
 		run.Steps[index] = OperationStep{Name: task.name, Unit: task.unit, State: "queued"}
 	}
-	for len(operations.history) >= 50 {
-		index := slices.IndexFunc(operations.history, func(run *operationRun) bool { return run.Finished != nil })
+	for len(ops.history) >= 50 {
+		index := slices.IndexFunc(ops.history, func(run *operationRun) bool { return run.Finished != nil })
 		if index < 0 {
 			break
 		}
-		operations.history = slices.Delete(operations.history, index, index+1)
+		ops.history = slices.Delete(ops.history, index, index+1)
 	}
-	operations.history = append(operations.history, run)
-	operations.queue = append(operations.queue, run)
+	ops.history = append(ops.history, run)
+	ops.queue = append(ops.queue, run)
 	run.stopQueued = context.AfterFunc(ctx, func() {
-		operations.mu.Lock()
-		defer operations.mu.Unlock()
+		ops.mu.Lock()
+		defer ops.mu.Unlock()
 		if run.State != "queued" {
 			return
 		}
@@ -117,14 +117,14 @@ func (operations *Operations) Submit(ctx context.Context, label, stack string, t
 		for index := range run.Steps {
 			run.Steps[index].State = "skipped"
 		}
-		operations.queue = slices.DeleteFunc(operations.queue, func(queued *operationRun) bool { return queued == run })
+		ops.queue = slices.DeleteFunc(ops.queue, func(queued *operationRun) bool { return queued == run })
 		run.tasks, run.stopQueued = nil, nil
 		run.cancel()
 		close(run.done)
 	})
-	if !operations.running {
-		operations.running = true
-		go operations.work()
+	if !ops.running {
+		ops.running = true
+		go ops.work()
 	}
 	return copyOperation(run), nil
 }
@@ -145,22 +145,22 @@ func operationState(err error) string {
 	return "succeeded"
 }
 
-func (operations *Operations) work() {
+func (ops *Operations) work() {
 	for {
-		operations.mu.Lock()
-		if len(operations.queue) == 0 {
-			operations.running = false
-			operations.mu.Unlock()
+		ops.mu.Lock()
+		if len(ops.queue) == 0 {
+			ops.running = false
+			ops.mu.Unlock()
 			return
 		}
-		run := operations.queue[0]
-		operations.queue = operations.queue[1:]
+		run := ops.queue[0]
+		ops.queue = ops.queue[1:]
 		started := time.Now()
 		run.State, run.Started = "running", &started
 		run.Revision++
 		run.stopQueued()
 		run.stopQueued = nil
-		operations.mu.Unlock()
+		ops.mu.Unlock()
 		var failures []error
 		for index, task := range run.tasks {
 			err := run.ctx.Err()
@@ -170,19 +170,19 @@ func (operations *Operations) work() {
 				}
 			}
 			if err == nil {
-				operations.mu.Lock()
+				ops.mu.Lock()
 				started := time.Now()
 				run.Steps[index].State, run.Steps[index].Started = "running", &started
 				run.Revision++
-				operations.mu.Unlock()
+				ops.mu.Unlock()
 				err = task.run(run.ctx, func(detail string) {
-					operations.mu.Lock()
-					defer operations.mu.Unlock()
+					ops.mu.Lock()
+					defer ops.mu.Unlock()
 					run.Steps[index].Detail = tail([]byte(detail), 16<<10)
 					run.Revision++
 				})
 			}
-			operations.mu.Lock()
+			ops.mu.Lock()
 			finished := time.Now()
 			run.Steps[index].State = operationState(err)
 			run.Revision++
@@ -191,12 +191,12 @@ func (operations *Operations) work() {
 				run.Steps[index].Error = err.Error()
 				failures = append(failures, fmt.Errorf("%s: %w", task.name, err))
 			}
-			operations.mu.Unlock()
+			ops.mu.Unlock()
 			if err != nil && (!run.continueOnError || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errOutcomeUnknown)) {
 				break
 			}
 		}
-		operations.mu.Lock()
+		ops.mu.Lock()
 		run.err = errors.Join(failures...)
 		run.State = operationState(run.err)
 		run.Revision++
@@ -213,24 +213,24 @@ func (operations *Operations) work() {
 		run.tasks = nil
 		run.cancel()
 		close(run.done)
-		operations.mu.Unlock()
+		ops.mu.Unlock()
 	}
 }
 
-func (operations *Operations) List() []Operation {
-	operations.mu.Lock()
-	defer operations.mu.Unlock()
-	result := make([]Operation, 0, len(operations.history))
-	for index := len(operations.history) - 1; index >= 0; index-- {
-		result = append(result, copyOperation(operations.history[index]))
+func (ops *Operations) List() []Operation {
+	ops.mu.Lock()
+	defer ops.mu.Unlock()
+	result := make([]Operation, 0, len(ops.history))
+	for index := len(ops.history) - 1; index >= 0; index-- {
+		result = append(result, copyOperation(ops.history[index]))
 	}
 	return result
 }
 
-func (operations *Operations) Get(id string) (Operation, bool) {
-	operations.mu.Lock()
-	defer operations.mu.Unlock()
-	for _, run := range operations.history {
+func (ops *Operations) Get(id string) (Operation, bool) {
+	ops.mu.Lock()
+	defer ops.mu.Unlock()
+	for _, run := range ops.history {
 		if run.ID == id {
 			return copyOperation(run), true
 		}
@@ -238,16 +238,16 @@ func (operations *Operations) Get(id string) (Operation, bool) {
 	return Operation{}, false
 }
 
-func (operations *Operations) Wait(ctx context.Context, id string) error {
-	operations.mu.Lock()
+func (ops *Operations) Wait(ctx context.Context, id string) error {
+	ops.mu.Lock()
 	var found *operationRun
-	for _, run := range operations.history {
+	for _, run := range ops.history {
 		if run.ID == id {
 			found = run
 			break
 		}
 	}
-	operations.mu.Unlock()
+	ops.mu.Unlock()
 	if found == nil {
 		return errors.New("action is no longer available")
 	}
@@ -259,40 +259,40 @@ func (operations *Operations) Wait(ctx context.Context, id string) error {
 	}
 }
 
-func (server *Server) perform(ctx context.Context, label, stack string, tasks []operationTask, continueOnError bool) error {
-	operation, err := server.operations.Submit(ctx, label, stack, tasks, continueOnError)
+func (s *Server) perform(ctx context.Context, label, stack string, tasks []operationTask, continueOnError bool) error {
+	operation, err := s.operations.Submit(ctx, label, stack, tasks, continueOnError)
 	if err != nil {
 		return err
 	}
-	return server.operations.Wait(ctx, operation.ID)
+	return s.operations.Wait(ctx, operation.ID)
 }
 
 func simpleTask(name, unit string, run func(context.Context) error) operationTask {
 	return operationTask{name: name, unit: unit, run: func(ctx context.Context, _ func(string)) error { return run(ctx) }}
 }
 
-func (server *Server) enqueue(writer http.ResponseWriter, label, stack string, tasks []operationTask, continueOnError bool) {
-	operation, err := server.operations.Submit(context.Background(), label, stack, tasks, continueOnError)
+func (s *Server) enqueue(w http.ResponseWriter, label, stack string, tasks []operationTask, continueOnError bool) {
+	operation, err := s.operations.Submit(context.Background(), label, stack, tasks, continueOnError)
 	if err != nil {
-		writeErr(writer, http.StatusTooManyRequests, err)
+		writeErr(w, http.StatusTooManyRequests, err)
 		return
 	}
-	writeJSONStatus(writer, http.StatusAccepted, map[string]any{"operation": operation})
+	writeJSONStatus(w, http.StatusAccepted, map[string]any{"operation": operation})
 }
 
-func (server *Server) listOperations(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Cache-Control", "no-store")
-	writeJSON(writer, server.operations.List())
+func (s *Server) listOperations(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, s.operations.List())
 }
 
-func (server *Server) getOperation(writer http.ResponseWriter, request *http.Request) {
-	writer.Header().Set("Cache-Control", "no-store")
-	operation, ok := server.operations.Get(request.PathValue("id"))
+func (s *Server) getOperation(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	operation, ok := s.operations.Get(r.PathValue("id"))
 	if !ok {
-		writeErr(writer, http.StatusNotFound, errors.New("action is no longer available; check unit state before retrying"))
+		writeErr(w, http.StatusNotFound, errors.New("action is no longer available; check unit state before retrying"))
 		return
 	}
-	writeJSON(writer, operation)
+	writeJSON(w, operation)
 }
 
 type boundedBuffer struct {
@@ -300,14 +300,14 @@ type boundedBuffer struct {
 	data  []byte
 }
 
-func (buffer *boundedBuffer) Write(data []byte) (int, error) {
+func (b *boundedBuffer) Write(data []byte) (int, error) {
 	size := len(data)
-	if size >= buffer.limit {
-		buffer.data = append(buffer.data[:0], data[size-buffer.limit:]...)
+	if size >= b.limit {
+		b.data = append(b.data[:0], data[size-b.limit:]...)
 	} else {
-		buffer.data = append(buffer.data, data...)
-		if len(buffer.data) > buffer.limit {
-			buffer.data = buffer.data[len(buffer.data)-buffer.limit:]
+		b.data = append(b.data, data...)
+		if len(b.data) > b.limit {
+			b.data = b.data[len(b.data)-b.limit:]
 		}
 	}
 	return size, nil
@@ -318,8 +318,8 @@ type progressWriter struct {
 	report func(string)
 }
 
-func (writer *progressWriter) Write(data []byte) (int, error) {
-	size, err := writer.buffer.Write(data)
-	writer.report(string(writer.buffer.data))
+func (pw *progressWriter) Write(data []byte) (int, error) {
+	size, err := pw.buffer.Write(data)
+	pw.report(string(pw.buffer.data))
 	return size, err
 }

@@ -74,21 +74,21 @@ func (s *Systemd) get(ctx context.Context) (systemdConnection, error) {
 	return c, nil
 }
 
-func (systemd *Systemd) close() {
-	if systemd.conn != nil {
-		systemd.conn.Close()
-		systemd.conn = nil
+func (s *Systemd) close() {
+	if s.conn != nil {
+		s.conn.Close()
+		s.conn = nil
 	}
-	if systemd.cancel != nil {
-		systemd.cancel()
-		systemd.cancel = nil
+	if s.cancel != nil {
+		s.cancel()
+		s.cancel = nil
 	}
 }
 
-func (systemd *Systemd) Close() {
-	systemd.mu.Lock()
-	defer systemd.mu.Unlock()
-	systemd.close()
+func (s *Systemd) Close() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.close()
 }
 
 func checkAction(action string) error {

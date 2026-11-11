@@ -19,18 +19,18 @@ type fakeSystemdClient struct {
 	reload func(context.Context) error
 }
 
-func (client *fakeSystemdClient) Status(context.Context, []string) (map[string]UnitState, error) {
+func (f *fakeSystemdClient) Status(context.Context, []string) (map[string]UnitState, error) {
 	return map[string]UnitState{}, nil
 }
-func (client *fakeSystemdClient) Action(ctx context.Context, unit, action string) error {
-	if client.action != nil {
-		return client.action(ctx, unit, action)
+func (f *fakeSystemdClient) Action(ctx context.Context, unit, action string) error {
+	if f.action != nil {
+		return f.action(ctx, unit, action)
 	}
 	return nil
 }
-func (client *fakeSystemdClient) Reload(ctx context.Context) error {
-	if client.reload != nil {
-		return client.reload(ctx)
+func (f *fakeSystemdClient) Reload(ctx context.Context) error {
+	if f.reload != nil {
+		return f.reload(ctx)
 	}
 	return nil
 }
@@ -161,17 +161,17 @@ func TestAPI(t *testing.T) {
 	}
 }
 
-func responseOperation(testingT *testing.T, response *httptest.ResponseRecorder) Operation {
-	testingT.Helper()
+func responseOperation(t *testing.T, response *httptest.ResponseRecorder) Operation {
+	t.Helper()
 	var result struct{ Operation Operation }
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || result.Operation.ID == "" {
-		testingT.Fatalf("missing operation: %s", response.Body)
+		t.Fatalf("missing operation: %s", response.Body)
 	}
 	return result.Operation
 }
 
-func TestActionContinuesAfterRequest(testingT *testing.T) {
-	server, cookie := testServer(testingT)
+func TestActionContinuesAfterRequest(t *testing.T) {
+	server, cookie := testServer(t)
 	started, release := make(chan struct{}), make(chan struct{})
 	server.systemd = &fakeSystemdClient{action: func(ctx context.Context, unit, action string) error { close(started); <-release; return ctx.Err() }}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -181,92 +181,92 @@ func TestActionContinuesAfterRequest(testingT *testing.T) {
 	response := httptest.NewRecorder()
 	server.Routes().ServeHTTP(response, request)
 	if response.Code != http.StatusAccepted {
-		testingT.Fatalf("action response: %d %s", response.Code, response.Body)
+		t.Fatalf("action response: %d %s", response.Code, response.Body)
 	}
-	operation := responseOperation(testingT, response)
+	operation := responseOperation(t, response)
 	cancel()
 	<-started
 	active, _ := server.operations.Get(operation.ID)
 	if active.State != "running" {
-		testingT.Fatalf("action: %+v", active)
+		t.Fatalf("action: %+v", active)
 	}
 	close(release)
-	if err := waitOperation(testingT, &server.operations, operation.ID); err != nil {
-		testingT.Fatal(err)
+	if err := waitOperation(t, &server.operations, operation.ID); err != nil {
+		t.Fatal(err)
 	}
 	handler := server.Routes()
-	if response := do(testingT, handler, nil, "GET", "/api/operations/"+operation.ID, "", false); response.Code != http.StatusUnauthorized {
-		testingT.Fatalf("operation without auth: %d", response.Code)
+	if response := do(t, handler, nil, "GET", "/api/operations/"+operation.ID, "", false); response.Code != http.StatusUnauthorized {
+		t.Fatalf("operation without auth: %d", response.Code)
 	}
-	if response := do(testingT, handler, cookie, "GET", "/api/operations/"+operation.ID, "", false); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"state":"succeeded"`) {
-		testingT.Fatalf("operation status: %d %s", response.Code, response.Body)
+	if response := do(t, handler, cookie, "GET", "/api/operations/"+operation.ID, "", false); response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"state":"succeeded"`) {
+		t.Fatalf("operation status: %d %s", response.Code, response.Body)
 	}
-	if response := do(testingT, handler, cookie, "POST", "/api/unit-action", `{"unit":"web.service","action":"invalid"}`, true); response.Code != http.StatusBadRequest {
-		testingT.Fatalf("invalid action: %d", response.Code)
+	if response := do(t, handler, cookie, "POST", "/api/unit-action", `{"unit":"web.service","action":"invalid"}`, true); response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid action: %d", response.Code)
 	}
 }
 
-func TestDeleteRefusesAfterStopFailure(testingT *testing.T) {
-	server, cookie := testServer(testingT)
+func TestDeleteRefusesAfterStopFailure(t *testing.T) {
+	server, cookie := testServer(t)
 	server.systemd = &fakeSystemdClient{action: func(context.Context, string, string) error { return errors.New("stop failed") }}
 	if err := server.files.Create("web/web.container", "[Container]\nImage=nginx\n"); err != nil {
-		testingT.Fatal(err)
+		t.Fatal(err)
 	}
-	response := do(testingT, server.Routes(), cookie, "DELETE", "/api/file?path=web/web.container&stop=1", "", true)
-	operation := responseOperation(testingT, response)
-	if err := waitOperation(testingT, &server.operations, operation.ID); err == nil {
-		testingT.Fatal("stop failure was swallowed")
+	response := do(t, server.Routes(), cookie, "DELETE", "/api/file?path=web/web.container&stop=1", "", true)
+	operation := responseOperation(t, response)
+	if err := waitOperation(t, &server.operations, operation.ID); err == nil {
+		t.Fatal("stop failure was swallowed")
 	}
 	if _, err := os.Stat(server.files.abs("web/web.container")); err != nil {
-		testingT.Fatal("file was deleted despite stop failure")
+		t.Fatal("file was deleted despite stop failure")
 	}
 	final, _ := server.operations.Get(operation.ID)
 	if final.Steps[1].State != "skipped" || final.Steps[2].State != "skipped" {
-		testingT.Fatalf("unsafe follow-up steps: %+v", final)
+		t.Fatalf("unsafe follow-up steps: %+v", final)
 	}
 }
 
-func TestDeployFailureIsTrackedAfterSave(testingT *testing.T) {
-	server, cookie := testServer(testingT)
+func TestDeployFailureIsTrackedAfterSave(t *testing.T) {
+	server, cookie := testServer(t)
 	server.systemd = &fakeSystemdClient{reload: func(context.Context) error { return errors.New("generator failed") }}
-	response := do(testingT, server.Routes(), cookie, "POST", "/api/file", `{"path":"web/web.container","content":"[Container]\nImage=nginx\n","apply":"restart"}`, true)
-	operation := responseOperation(testingT, response)
-	if err := waitOperation(testingT, &server.operations, operation.ID); err == nil {
-		testingT.Fatal("reload failure was swallowed")
+	response := do(t, server.Routes(), cookie, "POST", "/api/file", `{"path":"web/web.container","content":"[Container]\nImage=nginx\n","apply":"restart"}`, true)
+	operation := responseOperation(t, response)
+	if err := waitOperation(t, &server.operations, operation.ID); err == nil {
+		t.Fatal("reload failure was swallowed")
 	}
 	if _, err := os.Stat(filepath.Join(server.cfg.QuadletDir, "web/web.container")); err != nil {
-		testingT.Fatal("saved file missing")
+		t.Fatal("saved file missing")
 	}
 	final, _ := server.operations.Get(operation.ID)
 	if final.State != "failed" || final.Steps[1].State != "skipped" {
-		testingT.Fatalf("deployment state: %+v", final)
+		t.Fatalf("deployment state: %+v", final)
 	}
 }
 
-func TestStackStateTransitionsAndUnknown(testingT *testing.T) {
+func TestStackStateTransitionsAndUnknown(t *testing.T) {
 	for _, test := range []struct{ active, expected string }{{"active", "running"}, {"inactive", "stopped"}, {"activating", "busy"}, {"deactivating", "busy"}, {"failed", "failed"}, {"", "unknown"}} {
 		if result := stackState([]string{"web.service"}, map[string]UnitState{"web.service": {Active: test.active}}); result != test.expected {
-			testingT.Errorf("%q: got %s, want %s", test.active, result, test.expected)
+			t.Errorf("%q: got %s, want %s", test.active, result, test.expected)
 		}
 	}
 }
 
-func TestDeleteReportsReloadFailure(testingT *testing.T) {
-	server, cookie := testServer(testingT)
+func TestDeleteReportsReloadFailure(t *testing.T) {
+	server, cookie := testServer(t)
 	server.systemd = &fakeSystemdClient{reload: func(context.Context) error { return errors.New("reload failed after deletion") }}
 	if err := server.files.Create("web/web.container", "[Container]\nImage=nginx\n"); err != nil {
-		testingT.Fatal(err)
+		t.Fatal(err)
 	}
-	response := do(testingT, server.Routes(), cookie, "DELETE", "/api/file?path=web/web.container", "", true)
-	operation := responseOperation(testingT, response)
-	if err := waitOperation(testingT, &server.operations, operation.ID); err == nil {
-		testingT.Fatal("reload failure was swallowed")
+	response := do(t, server.Routes(), cookie, "DELETE", "/api/file?path=web/web.container", "", true)
+	operation := responseOperation(t, response)
+	if err := waitOperation(t, &server.operations, operation.ID); err == nil {
+		t.Fatal("reload failure was swallowed")
 	}
 	if _, err := os.Stat(server.files.abs("web/web.container")); !errors.Is(err, os.ErrNotExist) {
-		testingT.Fatalf("file not deleted: %v", err)
+		t.Fatalf("file not deleted: %v", err)
 	}
 	final, _ := server.operations.Get(operation.ID)
 	if final.State != "failed" || final.Steps[0].State != "succeeded" || final.Steps[1].State != "failed" {
-		testingT.Fatalf("partial operation result was hidden: %+v", final)
+		t.Fatalf("partial operation result was hidden: %+v", final)
 	}
 }
