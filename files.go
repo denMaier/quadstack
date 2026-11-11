@@ -163,9 +163,10 @@ func (fl *Files) scratchCopy(rel string, content *string) (string, error) {
 		if d.IsDir() {
 			return os.MkdirAll(filepath.Join(tmp, r), 0o700)
 		}
-		if !d.Type().IsRegular() || !isManaged(d.Name()) {
+		if !isManaged(d.Name()) || !(d.Type().IsRegular() || isLinkedFile(abs, d)) {
 			return nil
 		}
+		// Linked files are copied too: quadlet follows them, so references to them must resolve
 		b, err := os.ReadFile(abs)
 		if err != nil {
 			return err
@@ -285,6 +286,9 @@ func generatedUnit(out, unitName string) string {
 // Write saves content atomically, keeping the previous version in the history
 func (fl *Files) Write(rel, content string) error {
 	abs := fl.abs(rel)
+	if err := refuseLink(abs); err != nil {
+		return err
+	}
 	mode := fs.FileMode(0o600)
 	if st, err := os.Stat(abs); err == nil {
 		mode = st.Mode().Perm()
@@ -321,7 +325,18 @@ func (fl *Files) Create(rel, content string) error {
 	return fl.Write(rel, content)
 }
 
+// refuseLink keeps writes from replacing a symlink, or changing what it points to
+func refuseLink(abs string) error {
+	if st, err := os.Lstat(abs); err == nil && st.Mode()&fs.ModeSymlink != 0 {
+		return errors.New("symlinked files are not managed by Quadstack")
+	}
+	return nil
+}
+
 func (fl *Files) Delete(rel string) error {
+	if err := refuseLink(fl.abs(rel)); err != nil {
+		return err
+	}
 	if err := fl.snapshot(rel); err != nil {
 		return fmt.Errorf("saving history: %w", err)
 	}
@@ -329,6 +344,9 @@ func (fl *Files) Delete(rel string) error {
 }
 
 func (fl *Files) Move(from, to string) error {
+	if err := refuseLink(fl.abs(from)); err != nil {
+		return err
+	}
 	if _, err := os.Stat(fl.abs(to)); err == nil {
 		return fmt.Errorf("%s already exists", to)
 	}

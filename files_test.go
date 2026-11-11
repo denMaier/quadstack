@@ -72,3 +72,38 @@ func TestValidateWithQuadlet(t *testing.T) {
 		t.Fatalf("bad file: %+v", v)
 	}
 }
+
+func TestSymlinksAreReportedNotManaged(t *testing.T) {
+	fl := testFiles(t, "")
+	outside := filepath.Join(t.TempDir(), "real.container")
+	os.WriteFile(outside, []byte("[Container]\nImage=x\n"), 0o600)
+	os.Symlink(outside, fl.abs("linked.container"))
+	os.Symlink(t.TempDir(), fl.abs("linkedstack"))
+	fl.Create("app.container", "[Container]\nImage=app\n")
+
+	inv, err := Scan(fl.cfg.QuadletDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(inv.Linked, ",") != "linked.container,linkedstack" || len(inv.Stacks) != 1 {
+		t.Fatalf("linked = %v, stacks = %d", inv.Linked, len(inv.Stacks))
+	}
+	if err := fl.Write("linked.container", "changed"); err == nil {
+		t.Fatal("writing must not replace a symlink")
+	}
+	if err := fl.Delete("linked.container"); err == nil {
+		t.Fatal("deleting a symlink must be refused")
+	}
+	if b, _ := os.ReadFile(outside); string(b) != "[Container]\nImage=x\n" {
+		t.Fatal("the link target changed")
+	}
+	// Validation sees linked files, as quadlet does
+	tmp, err := fl.scratchCopy("app.container", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmp)
+	if _, err := os.Stat(filepath.Join(tmp, "linked.container")); err != nil {
+		t.Fatalf("scratch copy lacks the linked file: %v", err)
+	}
+}

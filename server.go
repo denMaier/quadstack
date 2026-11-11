@@ -240,6 +240,9 @@ func (s *Server) overview(ctx context.Context) (*overview, error) {
 
 	// Missing systemd or Podman (e.g. while developing) degrades the view instead of failing it
 	o := &overview{inv: inv}
+	if len(inv.Linked) > 0 {
+		o.warnings = append(o.warnings, "Quadstack does not manage symlinked files or folders, so these are not listed; their units still run: "+strings.Join(inv.Linked, ", "))
+	}
 	o.status, err = s.systemd.Status(ctx, units)
 	if err != nil {
 		o.warnings = append(o.warnings, err.Error())

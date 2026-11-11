@@ -68,6 +68,7 @@ type Resource struct {
 type Inventory struct {
 	Stacks    []*Stack
 	Resources []*Resource
+	Linked    []string // symlinked files and folders, which Quadstack leaves alone
 }
 
 // Stack groups files like a compose project: a subdirectory, or a pod and its containers at the top level
@@ -96,6 +97,15 @@ func isManaged(name string) bool {
 		ok = ok || ext == e
 	}
 	return ok && !strings.HasPrefix(name, ".")
+}
+
+// isLinkedFile reports whether a directory entry is a symlink to a regular file
+func isLinkedFile(abs string, d fs.DirEntry) bool {
+	if d.Type()&fs.ModeSymlink == 0 {
+		return false
+	}
+	st, err := os.Stat(abs)
+	return err == nil && st.Mode().IsRegular()
 }
 
 // cleanRel validates a client supplied path and keeps it inside the Quadlet directory
@@ -260,6 +270,7 @@ func Scan(root string) (*Inventory, error) {
 	}
 
 	var top []*QFile
+	var linked []string
 	err := filepath.WalkDir(root, func(abs string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -283,6 +294,14 @@ func Scan(root string) (*Inventory, error) {
 			}
 			return nil
 		}
+		// quadlet follows links, but writing through them would change files outside this
+		// directory, so they are reported instead of managed
+		if d.Type()&fs.ModeSymlink != 0 {
+			if st, err := os.Stat(abs); err == nil && (st.IsDir() || isManaged(d.Name())) {
+				linked = append(linked, rel)
+			}
+			return nil
+		}
 		if !d.Type().IsRegular() || !isManaged(d.Name()) {
 			return nil
 		}
@@ -301,7 +320,7 @@ func Scan(root string) (*Inventory, error) {
 
 	// Top level: pods first, so their containers (and drop-ins) can join them
 	owner := map[string]*Stack{} // file base (e.g. "web.pod", "app.container") -> stack
-	inv := &Inventory{}
+	inv := &Inventory{Linked: linked}
 	shared := map[string]bool{} // stems of top-level networks and volumes
 	for _, f := range top {
 		if f.Kind == "pod" {
