@@ -20,7 +20,7 @@ Homelab scale: one account, a few operators who all have the account's full righ
 
 The Quadlet directory is read from scratch for every request (`Scan` in `stacks.go`); nothing about it is cached or stored elsewhere. A folder is a stack. At the top level, a `.pod` and the containers that set `Pod=` to it form a stack, and every other unit is a stack of its own. Top-level networks and volumes are shared resources. Symlinked files and folders are reported, not managed.
 
-Writes are atomic (temporary file and rename) and keep the file's mode. Before a file is changed, moved or deleted, its current content goes into `history/<path>/<unix nanoseconds>`. A move takes the history along. Up to 50 versions are kept per file. Deleted files are found by their history.
+Every file access, from the web UI or MCP, opens each path component with `O_NOFOLLOW` relative to an open directory, so symlinks and concurrent renames cannot redirect it. Writes are atomic (temporary file and rename) and keep the file's mode. Before a file is changed, moved or deleted, its current content goes into `history/<path>/<unix nanoseconds>`. A move takes the history along. Up to 50 versions are kept per file. Deleted files are found by their history.
 
 **Validation** copies every managed file into a scratch directory, puts the new content in place and runs Podman's `quadlet -dryrun -user` on it, so references between files resolve. Only messages about the edited file count. A timeout, a crash or a generator that cannot run fails the check.
 
@@ -41,8 +41,6 @@ OpenID Connect with PKCE, state and nonce, in `auth.go`. After the callback the 
 3. works out the stack of every file, unit and container it touches, before and after the change, and checks the permission for each;
 4. is checked once more when its operation leaves the queue;
 5. is written to the audit log with its result.
-
-MCP file access opens every path component with `O_NOFOLLOW` relative to an open directory, so symlinks and concurrent renames cannot redirect it.
 
 ## Deployment
 

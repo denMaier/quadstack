@@ -223,13 +223,13 @@ func TestMCPRejectsSymlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, p := range []string{"web/link/secret.container", "web/linked.container"} {
-		if _, err := s.files.mcpRead(p); err == nil {
+		if _, err := s.files.Read(p); err == nil {
 			t.Errorf("read followed %s", p)
 		}
-		if err := s.files.mcpWrite(p, "changed"); err == nil {
+		if err := s.files.Write(p, "changed"); err == nil {
 			t.Errorf("write followed %s", p)
 		}
-		if err := s.files.mcpDelete(p); err == nil {
+		if err := s.files.Delete(p); err == nil {
 			t.Errorf("delete followed %s", p)
 		}
 	}

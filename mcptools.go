@@ -367,7 +367,7 @@ func (t *toolset) register() {
 					return nil, err
 				}
 			}
-			content, err := s.files.mcpRead(rel)
+			content, err := s.files.Read(rel)
 			if err != nil {
 				return nil, err
 			}
@@ -381,7 +381,7 @@ func (t *toolset) register() {
 		if err != nil {
 			return "", err
 		}
-		if _, err := s.files.mcpRead(rel); err == nil {
+		if _, err := s.files.Read(rel); err == nil {
 			if err := need(g, "files.write", scopeFor(inv, rel)); err != nil {
 				return "", err
 			}
@@ -444,7 +444,7 @@ func (t *toolset) register() {
 			if !v.OK {
 				return nil, fmt.Errorf("validation failed, nothing was saved:\n%s", v.Output)
 			}
-			if err := s.files.mcpWrite(rel, in.Content); err != nil {
+			if err := s.files.Write(rel, in.Content); err != nil {
 				return nil, err
 			}
 			res := map[string]any{"saved": rel, "stack": scope, "validation": v}
@@ -479,7 +479,7 @@ func (t *toolset) register() {
 			if err := need(g, "files.delete", scope); err != nil {
 				return nil, err
 			}
-			if _, err := s.files.mcpRead(rel); err != nil {
+			if _, err := s.files.Read(rel); err != nil {
 				return nil, err
 			}
 			var unit string
@@ -493,7 +493,7 @@ func (t *toolset) register() {
 				}
 				tasks = append(tasks, simpleTask("stop "+unit, unit, func(ctx context.Context) error { return s.systemd.Action(ctx, unit, "stop") }))
 			}
-			tasks = append(tasks, simpleTask("Delete "+rel, "", func(context.Context) error { return s.files.mcpDelete(rel) }), simpleTask("daemon-reload after deletion", "", s.systemd.Reload))
+			tasks = append(tasks, simpleTask("Delete "+rel, "", func(context.Context) error { return s.files.Delete(rel) }), simpleTask("daemon-reload after deletion", "", s.systemd.Reload))
 			err = s.perform(ctx, "Delete "+rel, scope, tasks, false)
 			return map[string]string{"deleted": rel}, err
 		})

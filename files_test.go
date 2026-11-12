@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -126,7 +127,9 @@ func TestSymlinksAreReportedNotManaged(t *testing.T) {
 	outside := filepath.Join(t.TempDir(), "real.container")
 	os.WriteFile(outside, []byte("[Container]\nImage=x\n"), 0o600)
 	os.Symlink(outside, fl.abs("linked.container"))
-	os.Symlink(t.TempDir(), fl.abs("linkedstack"))
+	outsideDir := t.TempDir()
+	os.WriteFile(filepath.Join(outsideDir, "there.container"), []byte("[Container]\nImage=y\n"), 0o600)
+	os.Symlink(outsideDir, fl.abs("linkedstack"))
 	fl.Create("app.container", "[Container]\nImage=app\n")
 
 	inv, err := Scan(fl.cfg.QuadletDir)
@@ -144,6 +147,22 @@ func TestSymlinksAreReportedNotManaged(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(outside); string(b) != "[Container]\nImage=x\n" {
 		t.Fatal("the link target changed")
+	}
+	// A linked folder is not a way out of the Quadlet directory either
+	if err := fl.Write("linkedstack/new.container", "new"); !errors.Is(err, errLinked) {
+		t.Fatalf("writing through a linked folder: %v", err)
+	}
+	if _, err := fl.Read("linkedstack/there.container"); !errors.Is(err, errLinked) {
+		t.Fatalf("reading through a linked folder: %v", err)
+	}
+	if err := fl.Move("app.container", "linkedstack/app.container"); !errors.Is(err, errLinked) {
+		t.Fatalf("moving into a linked folder: %v", err)
+	}
+	if err := fl.Delete("linkedstack/there.container"); !errors.Is(err, errLinked) {
+		t.Fatalf("deleting through a linked folder: %v", err)
+	}
+	if entries, _ := os.ReadDir(outsideDir); len(entries) != 1 {
+		t.Fatalf("the linked folder changed: %v", entries)
 	}
 	// Validation sees linked files, as quadlet does
 	tmp, err := fl.scratchCopy("app.container", nil)

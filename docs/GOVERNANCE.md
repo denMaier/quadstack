@@ -11,7 +11,7 @@ These rules hold for every change. A change to one of them is written down here 
 
 ## Files
 
-5. **Nothing outside the Quadlet directory.** Client paths are cleaned and must name a Quadlet, drop-in or `.env` file; hidden paths are refused. Writes never replace or follow a symlink. (`cleanRel`, `relParam`, `refuseLink`, `mcpParent`; `TestCleanRel`, `TestMCPRejectsSymlinks`, `TestSymlinksAreReportedNotManaged`)
+5. **Nothing outside the Quadlet directory.** Client paths are cleaned and must name a Quadlet, drop-in or `.env` file; hidden paths are refused. Reads and writes never follow a symlinked file or folder, in the web UI and over MCP alike. (`cleanRel`, `relParam`, `Files.parent`, `readAt`; `TestCleanRel`, `TestMCPRejectsSymlinks`, `TestSymlinksAreReportedNotManaged`)
 6. **Nothing is lost without a trace.** A change, move or delete first keeps the previous version; if that fails, the change does not happen. Only an explicit **Forget** removes versions. (`Files.Write`, `Delete`, `Move`; `TestHistory`, `TestMoveKeepsHistory`, `TestDeletedAndForget`)
 7. **Validation fails closed.** A file Podman rejects is not saved unless a signed-in person insists; MCP cannot insist. When the generator cannot give a verdict, the check fails. (`Validate`; `TestValidateFailsClosed`, `TestValidateWithQuadlet`)
 
