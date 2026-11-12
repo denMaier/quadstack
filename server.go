@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
 	"path"
+	"slices"
 	"strings"
 	"time"
 
@@ -333,6 +335,96 @@ func (s *Server) removeStack(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
+// unitStep is one systemd job of an action
+type unitStep struct{ unit, action string }
+
+// planUnits orders an action on units around shared network namespaces. A container that joins
+// another's namespace (Network=container:…) loses it when that container stops or restarts, so
+// it is stopped first and, on a restart, started again afterwards. parents maps such a unit to
+// the unit it joins; active names the dependents outside units that run now.
+func planUnits(units []string, action string, parents map[string]string, active func(string) bool) []unitStep {
+	var deps, rest []string
+	for d, p := range parents {
+		if slices.Contains(units, p) && (slices.Contains(units, d) || active(d)) {
+			deps = append(deps, d)
+		}
+	}
+	slices.Sort(deps)
+	for _, u := range units {
+		if !slices.Contains(deps, u) {
+			rest = append(rest, u)
+		}
+	}
+	var steps []unitStep
+	add := func(units []string, action string) {
+		for _, u := range units {
+			steps = append(steps, unitStep{u, action})
+		}
+	}
+	switch action {
+	case "start":
+		// a namespace must exist before a container can join it
+		for _, joins := range []bool{false, true} {
+			for _, u := range units {
+				if (parents[u] != "") == joins {
+					steps = append(steps, unitStep{u, "start"})
+				}
+			}
+		}
+	case "stop":
+		add(deps, "stop")
+		add(rest, "stop")
+	case "restart":
+		add(deps, "stop")
+		add(rest, "restart")
+		add(deps, "start")
+	}
+	return steps
+}
+
+// unitPlan is planUnits for the scanned Quadlets and what systemd reports as running
+func (s *Server) unitPlan(ctx context.Context, inv *Inventory, units []string, action string) ([]unitStep, error) {
+	parents := inv.netnsParents()
+	var outside []string
+	for d, p := range parents {
+		if action != "start" && slices.Contains(units, p) && !slices.Contains(units, d) {
+			outside = append(outside, d)
+		}
+	}
+	status := map[string]UnitState{}
+	if len(outside) > 0 {
+		var err error
+		if status, err = s.systemd.Status(ctx, outside); err != nil {
+			return nil, fmt.Errorf("checking the containers that share this network: %w", err)
+		}
+	}
+	return planUnits(units, action, parents, func(u string) bool {
+		a := status[u].Active
+		return a == "active" || a == "activating" || a == "reloading"
+	}), nil
+}
+
+// unitTasks runs the steps of a plan. A container is not started when the one whose network
+// it shares failed to start or restart.
+func (s *Server) unitTasks(inv *Inventory, steps []unitStep) []operationTask {
+	parents := inv.netnsParents()
+	failed := map[string]bool{}
+	tasks := make([]operationTask, 0, len(steps))
+	for _, step := range steps {
+		tasks = append(tasks, simpleTask(step.action+" "+step.unit, step.unit, func(ctx context.Context) error {
+			if p := parents[step.unit]; step.action == "start" && failed[p] {
+				return fmt.Errorf("start %s: not attempted, because %s, whose network it shares, is not running", step.unit, p)
+			}
+			err := s.systemd.Action(ctx, step.unit, step.action)
+			if err != nil && step.action != "stop" {
+				failed[step.unit] = true
+			}
+			return err
+		}))
+	}
+	return tasks
+}
+
 // POST /api/stack-action {stack, action}: start, stop or restart every unit of a stack
 func (s *Server) stackAction(w http.ResponseWriter, r *http.Request) {
 	var req struct{ Stack, Action string }
@@ -344,8 +436,13 @@ func (s *Server) stackAction(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	st, err := FindStack(s.cfg.QuadletDir, req.Stack)
+	inv, err := Scan(s.cfg.QuadletDir)
 	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	st := inv.stack(req.Stack)
+	if st == nil {
 		writeErr(w, http.StatusNotFound, errors.New("unknown stack"))
 		return
 	}
@@ -354,13 +451,12 @@ func (s *Server) stackAction(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("this stack has no runnable units"))
 		return
 	}
-	tasks := make([]operationTask, 0, len(units))
-	for _, unit := range units {
-		tasks = append(tasks, simpleTask(req.Action+" "+unit, unit, func(ctx context.Context) error {
-			return s.systemd.Action(ctx, unit, req.Action)
-		}))
+	steps, err := s.unitPlan(r.Context(), inv, units, req.Action)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
 	}
-	s.enqueue(w, req.Action+" stack "+st.Name, st.ID, tasks, true)
+	s.enqueue(w, req.Action+" stack "+st.Name, st.ID, s.unitTasks(inv, steps), true)
 }
 
 // POST /api/unit-action {unit, action}
@@ -378,9 +474,17 @@ func (s *Server) unitAction(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	s.enqueue(w, req.Action+" "+req.Unit, "", []operationTask{simpleTask(req.Action+" "+req.Unit, req.Unit, func(ctx context.Context) error {
-		return s.systemd.Action(ctx, req.Unit, req.Action)
-	})}, false)
+	inv, err := Scan(s.cfg.QuadletDir)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	steps, err := s.unitPlan(r.Context(), inv, []string{req.Unit}, req.Action)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	s.enqueue(w, req.Action+" "+req.Unit, "", s.unitTasks(inv, steps), false)
 }
 
 func (s *Server) reload(w http.ResponseWriter, r *http.Request) {
@@ -441,12 +545,16 @@ func (s *Server) saveAndApply(w http.ResponseWriter, r *http.Request, created bo
 	resp := map[string]any{"ok": true, "validation": v}
 	if req.Apply == "reload" || req.Apply == "restart" {
 		tasks := []operationTask{simpleTask("daemon-reload", "", s.systemd.Reload)}
+		var err error
 		if file := parseFile(s.files.abs(rel), rel); req.Apply == "restart" && file.Unit != "" {
-			tasks = append(tasks, simpleTask("restart "+file.Unit, file.Unit, func(ctx context.Context) error {
-				return s.systemd.Action(ctx, file.Unit, "restart")
-			}))
+			var restart []operationTask
+			restart, err = s.restartTasks(r.Context(), file.Unit)
+			tasks = append(tasks, restart...)
 		}
-		operation, err := s.operations.Submit(context.Background(), "Apply "+rel, "", tasks, false)
+		var operation Operation
+		if err == nil {
+			operation, err = s.operations.Submit(context.Background(), "Apply "+rel, "", tasks, false)
+		}
 		if err != nil {
 			resp["applyError"] = "File saved, but applying was not queued: " + err.Error()
 		} else {
@@ -454,6 +562,16 @@ func (s *Server) saveAndApply(w http.ResponseWriter, r *http.Request, created bo
 		}
 	}
 	writeJSON(w, resp)
+}
+
+// restartTasks restarts a unit as the Quadlets are now, with the containers that share its network
+func (s *Server) restartTasks(ctx context.Context, unit string) ([]operationTask, error) {
+	inv, err := Scan(s.cfg.QuadletDir)
+	if err != nil {
+		return nil, err
+	}
+	steps, err := s.unitPlan(ctx, inv, []string{unit}, "restart")
+	return s.unitTasks(inv, steps), err
 }
 
 func (s *Server) writeFile(w http.ResponseWriter, r *http.Request)  { s.saveAndApply(w, r, false) }
@@ -466,9 +584,17 @@ func (s *Server) deleteFile(w http.ResponseWriter, r *http.Request) {
 	}
 	var tasks []operationTask
 	if f := parseFile(s.files.abs(rel), rel); f.Unit != "" && r.URL.Query().Get("stop") == "1" {
-		tasks = append(tasks, simpleTask("stop "+f.Unit, f.Unit, func(ctx context.Context) error {
-			return s.systemd.Action(ctx, f.Unit, "stop")
-		}))
+		inv, err := Scan(s.cfg.QuadletDir)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		steps, err := s.unitPlan(r.Context(), inv, []string{f.Unit}, "stop")
+		if err != nil {
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+		tasks = s.unitTasks(inv, steps)
 	}
 	tasks = append(tasks, simpleTask("Delete "+rel, "", func(context.Context) error { return s.files.Delete(rel) }), simpleTask("daemon-reload after deletion", "", s.systemd.Reload))
 	s.enqueue(w, "Delete "+rel, "", tasks, false)

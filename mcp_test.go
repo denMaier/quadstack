@@ -336,3 +336,44 @@ func TestClientAddr(t *testing.T) {
 		t.Fatalf("repeated header: %q", got)
 	}
 }
+
+// A grant for one stack cannot restart a VPN container that a container in another stack depends on
+func TestMCPSharedNetworkNeedsEveryStack(t *testing.T) {
+	s, c, calls := vpnServer(t)
+	h := s.Routes()
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+	session := func(rules string) *mcp.ClientSession {
+		w := do(t, h, c, "POST", "/api/mcp/grants", `{"label":"a","minutes":30,"rules":`+rules+`}`, true)
+		var created struct{ Token string }
+		json.Unmarshal(w.Body.Bytes(), &created)
+		cs, err := mcpSession(t, ts.URL, created.Token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { cs.Close() })
+		return cs
+	}
+
+	narrow := session(`{"units.restart":["d/vpn"],"files.write":["d/vpn"]}`)
+	for tool, args := range map[string]map[string]any{
+		"unit_action":  {"unit": "zvpn.service", "action": "restart"},
+		"stack_action": {"stack": "d/vpn", "action": "restart"},
+		"write_file":   {"path": "vpn/zvpn.container", "content": "[Container]\nImage=vpn:2\nContainerName=vpn\n", "apply": "restart"},
+	} {
+		if out, isErr := callText(t, narrow, tool, args); !isErr || !strings.Contains(out, "qbit.service") {
+			t.Errorf("%s reached into another stack: %s", tool, out)
+		}
+	}
+	if b, _ := s.files.Read("vpn/zvpn.container"); len(*calls) != 0 || strings.Contains(b, "vpn:2") {
+		t.Fatalf("a refused call changed something: %v %q", *calls, b)
+	}
+
+	both := session(`{"units.restart":["d/vpn","d/other"]}`)
+	if out, isErr := callText(t, both, "unit_action", map[string]any{"unit": "zvpn.service", "action": "restart"}); isErr {
+		t.Fatalf("restart with both stacks allowed: %s", out)
+	}
+	if want := []string{"stop app.service", "stop qbit.service", "restart zvpn.service", "start app.service", "start qbit.service"}; !slices.Equal(*calls, want) {
+		t.Fatalf("systemd calls: %v", *calls)
+	}
+}

@@ -53,8 +53,19 @@
     }
   }
 
-  const stackAction = (action: string) => run(action, () => api.stackAction(stack.id, action))
-  const unitAction = (unit: string, action: string) => run(action + ' ' + unit, () => api.unitAction(unit, action))
+  // Containers that share the network of one of the units acted on lose it when that unit
+  // stops or restarts, so the server stops them first; say so before it happens
+  function confirmShared(acted: string[], action: string) {
+    const parents = stack.files.filter((f) => f.unit && acted.includes(f.unit))
+    const others = [...new Set(parents.flatMap((f) => f.sharedBy ?? []))].filter((u) => !acted.includes(u))
+    if (action === 'start' || !others.length) return true
+    const after = action === 'restart' ? ' and started again afterwards' : ''
+    const of = parents.filter((f) => f.sharedBy?.length).map((f) => f.unit).join(', ')
+    return confirm(`Sharing the network of ${of}: ${others.join(', ')}.\n\nThose that are running are stopped first${after}. Continue?`)
+  }
+
+  const stackAction = (action: string) => confirmShared(units, action) && run(action, () => api.stackAction(stack.id, action))
+  const unitAction = (unit: string, action: string) => confirmShared([unit], action) && run(action + ' ' + unit, () => api.unitAction(unit, action))
 
   async function update() {
     await run('Pulling images (see Activity)', () => api.pull(stack.id))

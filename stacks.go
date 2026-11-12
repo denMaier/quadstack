@@ -490,15 +490,22 @@ func fileOrder(f *QFile) string {
 	return rank[f.Kind] + f.Path
 }
 
+func (inv *Inventory) stack(id string) *Stack {
+	for _, s := range inv.Stacks {
+		if s.ID == id {
+			return s
+		}
+	}
+	return nil
+}
+
 func FindStack(root, id string) (*Stack, error) {
 	inv, err := Scan(root)
 	if err != nil {
 		return nil, err
 	}
-	for _, s := range inv.Stacks {
-		if s.ID == id {
-			return s, nil
-		}
+	if s := inv.stack(id); s != nil {
+		return s, nil
 	}
 	return nil, fs.ErrNotExist
 }

@@ -56,6 +56,7 @@
 
   async function save(apply: Apply, force = false) {
     if ((busy && !force) || applying || loading) return
+    if (apply === 'restart' && !force && file?.sharedBy?.length && !confirm(`Sharing the network of ${file.unit}: ${file.sharedBy.join(', ')}.\n\nThose that are running are stopped first and started again afterwards. Continue?`)) return
     busy = true
     working = 'Saving' + (apply ? ' and queuing ' + apply : '') + '…'
     error = notice = ''
