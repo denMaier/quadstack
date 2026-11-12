@@ -277,15 +277,67 @@ func (fl *Files) Validate(ctx context.Context, rel string, content *string) Vali
 	v.Output, problems = quadletMessages(strings.ReplaceAll(stderr.String(), tmp+string(filepath.Separator), ""), rel)
 	if content != nil {
 		if f := parseFile(target, rel); f.Unit != "" {
-			v.Generated = generatedUnit(stdout.String(), f.Unit)
+			// Relative paths resolve against the unit's directory, which is the scratch copy here
+			v.Generated = generatedUnit(strings.ReplaceAll(stdout.String(), tmp, fl.cfg.QuadletDir), f.Unit)
 		}
 	}
 	// quadlet exits non-zero when any file fails to convert; only this file's errors block the save
 	v.OK = runErr == nil || len(problems) == 0
 	if !v.OK {
 		v.Output = strings.Join(problems, "\n")
+	} else if content != nil {
+		v.Output = strings.TrimPrefix(strings.Join(append([]string{v.Output}, fl.hints(tmp, rel)...), "\n"), "\n")
 	}
 	return v
+}
+
+// hints are warnings about a container file the generator accepts, because only the other
+// files or the disk show the problem. They never block a save.
+func (fl *Files) hints(scratch, rel string) []string {
+	inv, err := Scan(scratch)
+	if err != nil {
+		return nil
+	}
+	var f *QFile
+	var containers []*QFile
+	for _, st := range inv.Stacks {
+		for _, other := range st.Files {
+			if other.Path == rel {
+				f = other
+			} else if other.Kind == "container" {
+				containers = append(containers, other)
+			}
+		}
+	}
+	if f == nil || f.Kind != "container" {
+		return nil
+	}
+	var out []string
+	if f.NetnsOf != "" && f.publishes {
+		out = append(out, fmt.Sprintf("Warning: PublishPort= has no effect here: this container shares the network of %s, and Podman discards its port mappings. Publish the port on %s instead.", f.NetnsOf, f.NetnsOf))
+	}
+	for _, other := range containers {
+		if other.ContainerName == f.ContainerName && !strings.Contains(f.ContainerName, "%") {
+			out = append(out, fmt.Sprintf("Warning: %s names its container %q too. Each of the two units replaces the other's container when it starts.", other.Path, f.ContainerName))
+		}
+	}
+	for _, name := range f.envFiles {
+		p := name
+		if rest, ok := strings.CutPrefix(p, "%h"); ok {
+			home, _ := os.UserHomeDir()
+			p = home + rest
+		}
+		switch {
+		case strings.HasPrefix(p, "%"):
+			continue // only systemd can resolve other specifiers
+		case !filepath.IsAbs(p):
+			p = filepath.Join(fl.cfg.QuadletDir, filepath.Dir(filepath.FromSlash(rel)), p)
+		}
+		if _, err := os.Stat(p); errors.Is(err, fs.ErrNotExist) {
+			out = append(out, fmt.Sprintf("Warning: EnvironmentFile=%s: %s does not exist, so the container will not start.", name, p))
+		}
+	}
+	return out
 }
 
 // quadletMessages keeps the generator's messages about rel, without the "quadlet-generator[pid]: "

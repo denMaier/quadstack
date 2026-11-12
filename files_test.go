@@ -54,6 +54,43 @@ func TestValidateFailsClosed(t *testing.T) {
 	}
 }
 
+// Hints are about what the generator cannot see; they warn and never block
+func TestValidateHints(t *testing.T) {
+	fl := testFiles(t, fakeQuadlet(t, "exit 0"))
+	fl.Create("vpn/gluetun.container", "[Container]\nImage=gluetun\nContainerName=gluetun\nPublishPort=5030:5030\n")
+	fl.Create("vpn/there.env", "A=1\n")
+	check := func(rel, content string) string {
+		t.Helper()
+		v := fl.Validate(context.Background(), rel, &content)
+		if !v.OK {
+			t.Fatalf("a hint blocked the save: %+v", v)
+		}
+		return v.Output
+	}
+
+	out := check("vpn/slskd.container", "[Container]\nImage=slskd\nNetwork=gluetun.container\nPublishPort=5030:5030\n"+
+		"ContainerName=gluetun\nEnvironmentFile=there.env\nEnvironmentFile=gone.env\nEnvironmentFile=%t/later.env\n")
+	for _, want := range []string{
+		"PublishPort= has no effect here",
+		`vpn/gluetun.container names its container "gluetun" too`,
+		"EnvironmentFile=gone.env: " + fl.abs("vpn/gone.env") + " does not exist",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Count(out, "Warning:") != 3 {
+		t.Errorf("want exactly three warnings:\n%s", out)
+	}
+	// The container that owns the namespace publishes the ports, and an ordinary file gets no hints
+	if out := check("vpn/gluetun.container", "[Container]\nImage=gluetun\nContainerName=gluetun\nPublishPort=5030:5030\n"); out != "" {
+		t.Errorf("hints for the VPN container: %s", out)
+	}
+	if out := check("web.container", "[Container]\nImage=nginx\nPublishPort=8080:80\n"); out != "" {
+		t.Errorf("hints for an ordinary container: %s", out)
+	}
+}
+
 // TestValidateWithQuadlet runs Podman's own generator when it is installed (CI installs it)
 func TestValidateWithQuadlet(t *testing.T) {
 	bin := findQuadlet()
@@ -64,9 +101,15 @@ func TestValidateWithQuadlet(t *testing.T) {
 	if err := fl.Write("web.network", "[Network]\n"); err != nil {
 		t.Fatal(err)
 	}
-	good := "[Container]\nImage=docker.io/library/nginx:latest\nNetwork=web.network\n"
-	if v := fl.Validate(context.Background(), "web/web.container", &good); !v.OK || !strings.Contains(v.Generated, "podman run") {
+	fl.Write("web/web.env", "A=1\n")
+	good := "[Container]\nImage=docker.io/library/nginx:latest\nNetwork=web.network\nEnvironmentFile=web.env\n"
+	v := fl.Validate(context.Background(), "web/web.container", &good)
+	if !v.OK || !strings.Contains(v.Generated, "podman run") {
 		t.Fatalf("good file: %+v", v)
+	}
+	// The generated unit names the real files, not the scratch copy
+	if !strings.Contains(v.Generated, "--env-file "+fl.abs("web/web.env")) || strings.Contains(v.Generated, "scratch-") {
+		t.Fatalf("generated unit: %s", v.Generated)
 	}
 	bad := "[Container]\nImage=docker.io/library/nginx:latest\nBogusKey=1\n"
 	if v := fl.Validate(context.Background(), "web/web.container", &bad); v.OK || !strings.Contains(v.Output, "BogusKey") {

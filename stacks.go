@@ -49,6 +49,10 @@ type QFile struct {
 	SharedBy []string    `json:"sharedBy,omitempty"`
 	Mounts   []Mount     `json:"mounts,omitempty"`
 	Secrets  []SecretRef `json:"secrets,omitempty"`
+
+	// read for the hints Validate adds
+	publishes bool
+	envFiles  []string
 }
 
 type Mount struct {
@@ -188,6 +192,10 @@ func parseFile(abs, rel string) *QFile {
 			f.Mounts = append(f.Mounts, parseVolume(o.Value))
 		case o.Section == "Container" && o.Name == "Mount":
 			f.Mounts = append(f.Mounts, parseMount(o.Value))
+		case o.Section == "Container" && o.Name == "PublishPort":
+			f.publishes = true
+		case o.Section == "Container" && o.Name == "EnvironmentFile":
+			f.envFiles = append(f.envFiles, strings.Fields(o.Value)...)
 		case o.Section == "Container" && o.Name == "Secret":
 			f.Secrets = append(f.Secrets, parseSecret(o.Value))
 		case o.Section == "Install" && (o.Name == "WantedBy" || o.Name == "RequiredBy"):
