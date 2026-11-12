@@ -25,6 +25,8 @@
   let showGenerated = $state(false)
   let historyOpen = $state(false)
   let secretsOpen = $state(false)
+  // A value was moved into a secret: 'pending' until saved, then 'kept' while the history still holds it
+  let oldValue = $state<'' | 'pending' | 'kept'>('')
 
   const dirty = $derived(content !== saved)
   const applying = $derived(activity.items.some((operation) => isActive(operation) && operation.label === 'Apply ' + path))
@@ -65,6 +67,7 @@
       const r = await api.saveFile(path, submitted, apply, force)
       saved = submitted
       validation = r.validation
+      if (oldValue === 'pending') oldValue = 'kept'
       notice = r.applyError
         ? ''
         : r.operation ? 'Saved. Applying is queued; see Activity for progress and the result.' : 'Saved. Reload systemd to apply.'
@@ -122,6 +125,16 @@
     notice = `Loaded the version from ${new Date(v.time).toLocaleString()}. Save to keep it.`
   }
 
+  async function forgetOldValue() {
+    if (!confirm(`Forget all saved versions of ${path}? They cannot be restored afterwards.`)) return
+    try {
+      await api.forgetHistory(path)
+      oldValue = ''
+    } catch (e: any) {
+      error = e.message
+    }
+  }
+
   const problems = $derived(validation && !validation.ok ? validation.output : '')
 </script>
 
@@ -169,6 +182,13 @@
       {#if validation?.output}<pre class="warn">{validation.output}</pre>{/if}
     </div>
   {/if}
+  {#if oldValue === 'kept'}
+    <div class="warn-box row wrap">
+      <span class="grow">The value you moved into a secret is still readable in this file's history.</span>
+      <button onclick={forgetOldValue}>Forget history</button>
+      <button class="ghost" onclick={() => (oldValue = '')}>Keep</button>
+    </div>
+  {/if}
   {#if showGenerated && validation?.generated}
     <pre class="generated panel">{validation.generated}</pre>
   {/if}
@@ -179,10 +199,11 @@
     {path}
     {content}
     onclose={() => (secretsOpen = false)}
-    onapply={(next: string, msg: string) => {
+    onapply={(next: string, msg: string, moved?: boolean) => {
       content = next
       secretsOpen = false
       notice = msg
+      if (moved) oldValue = 'pending'
     }}
   />
 {/if}

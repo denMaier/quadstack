@@ -10,7 +10,13 @@
     content,
     onclose,
     onapply,
-  }: { path: string; content: string; onclose: () => void; onapply: (content: string, notice: string) => void } = $props()
+  }: {
+    path: string
+    content: string
+    onclose: () => void
+    // moved: a value that was in the file is now a secret, but still in the file's history
+    onapply: (content: string, notice: string, moved?: boolean) => void
+  } = $props()
 
   let dialog: HTMLDialogElement
   let error = $state('')
@@ -86,7 +92,7 @@
       await api.setSecret({ name: n, value: e.value, replace: true })
       const ls = [...lines]
       ls[e.i] = `Secret=${n},type=env,target=${e.key}`
-      onapply(ls.join('\n'), `Created secret "${n}" and replaced Environment=${e.key}. Save to apply.`)
+      onapply(ls.join('\n'), `Created secret "${n}" and replaced Environment=${e.key}. Save to apply.`, true)
     })
 
   const moveFile = (b: (typeof binds)[number]) =>
