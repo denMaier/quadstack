@@ -22,7 +22,7 @@ The Quadlet directory is read from scratch for every request (`Scan` in `stacks.
 
 Every file access, from the web UI or MCP, opens each path component with `O_NOFOLLOW` relative to an open directory, so symlinks and concurrent renames cannot redirect it. Writes are atomic (temporary file and rename) and keep the file's mode. Before a file is changed, moved or deleted, its current content goes into `history/<path>/<unix nanoseconds>`. A move takes the history along. Up to 50 versions are kept per file. Deleted files are found by their history.
 
-**Validation** copies every managed file into a scratch directory, puts the new content in place and runs Podman's `quadlet -dryrun -user` on it, so references between files resolve. Only messages about the edited file count. A timeout, a crash or a generator that cannot run fails the check. The verdict is Podman's alone; Quadstack only adds warnings the generator cannot give because they depend on other files or the disk (`hints`), and these never block a save.
+**Validation** copies every managed file into a scratch directory, puts the new content in place and runs Podman's `quadlet -dryrun -user` on it, so references between files resolve. Only messages about the edited file count. A timeout, a crash or a generator that cannot run fails the check. The verdict is Podman's alone; Quadstack only adds warnings the generator cannot give because they depend on other files or the disk (`hints`), and these never block a save. The one that looks at the disk, a missing `EnvironmentFile=`, is added only for signed-in operators (`EnvFileHints`), never for MCP.
 
 ## Actions
 
