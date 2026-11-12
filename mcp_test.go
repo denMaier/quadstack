@@ -377,3 +377,30 @@ func TestMCPSharedNetworkNeedsEveryStack(t *testing.T) {
 		t.Fatalf("systemd calls: %v", *calls)
 	}
 }
+
+// Check over MCP never says whether a file exists: a grant must not learn about the account's files
+func TestMCPCheckDoesNotProbeFiles(t *testing.T) {
+	s, c := testServer(t)
+	s.cfg.QuadletBin = fakeQuadlet(t, "exit 0")
+	s.files.cfg.QuadletBin = s.cfg.QuadletBin
+	s.files.Write("web/web.container", "[Container]\nImage=nginx\n")
+	ts := httptest.NewServer(s.Routes())
+	defer ts.Close()
+	w := do(t, s.Routes(), c, "POST", "/api/mcp/grants", `{"label":"a","minutes":30,"rules":{"files.write":["d/web"]}}`, true)
+	var created struct{ Token string }
+	json.Unmarshal(w.Body.Bytes(), &created)
+	cs, err := mcpSession(t, ts.URL, created.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	out, isErr := callText(t, cs, "validate_file", map[string]any{"path": "web/web.container", "content": "[Container]\nImage=nginx\nEnvironmentFile=/etc/nonexistent-probe\n"})
+	if isErr || strings.Contains(out, "does not exist") {
+		t.Fatalf("MCP check revealed a file's existence: %s", out)
+	}
+	// A signed-in operator gets the warning
+	w = do(t, s.Routes(), c, "POST", "/api/validate", `{"path":"web/web.container","content":"[Container]\nImage=nginx\nEnvironmentFile=/etc/nonexistent-probe\n"}`, true)
+	if !strings.Contains(w.Body.String(), "does not exist") {
+		t.Fatalf("web check: %s", w.Body)
+	}
+}

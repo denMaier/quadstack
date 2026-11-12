@@ -528,7 +528,7 @@ func (s *Server) saveAndApply(w http.ResponseWriter, r *http.Request, created bo
 		writeErr(w, http.StatusBadRequest, errors.New("apply must be empty, reload or restart"))
 		return
 	}
-	v := s.files.Validate(r.Context(), rel, &req.Content)
+	v := s.check(r.Context(), rel, req.Content)
 	if !v.OK && !req.Force {
 		writeJSONStatus(w, http.StatusUnprocessableEntity, map[string]any{"error": "Validation failed", "validation": v})
 		return
@@ -636,7 +636,16 @@ func (s *Server) validate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, s.files.Validate(r.Context(), rel, &req.Content))
+	writeJSON(w, s.check(r.Context(), rel, req.Content))
+}
+
+// check is Validate plus the warnings only signed-in operators get
+func (s *Server) check(ctx context.Context, rel, content string) Validation {
+	v := s.files.Validate(ctx, rel, &content)
+	if v.OK {
+		v.Output = strings.TrimPrefix(strings.Join(append([]string{v.Output}, s.files.EnvFileHints(rel, content)...), "\n"), "\n")
+	}
+	return v
 }
 
 func (s *Server) history(w http.ResponseWriter, r *http.Request) {

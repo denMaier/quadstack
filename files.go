@@ -321,7 +321,25 @@ func (fl *Files) hints(scratch, rel string) []string {
 			out = append(out, fmt.Sprintf("Warning: %s names its container %q too. Each of the two units replaces the other's container when it starts.", other.Path, f.ContainerName))
 		}
 	}
-	for _, name := range f.envFiles {
+	return out
+}
+
+// EnvFileHints warns about EnvironmentFile= targets of a container file that do not exist. It
+// looks at the disk, so only signed-in operators get it: an MCP grant must not learn which of
+// the account's files exist.
+func (fl *Files) EnvFileHints(rel, content string) []string {
+	if path.Ext(rel) != ".container" {
+		return nil
+	}
+	tmp, err := os.CreateTemp(fl.cfg.StateDir, "hint-")
+	if err != nil {
+		return nil
+	}
+	defer os.Remove(tmp.Name())
+	tmp.WriteString(content)
+	tmp.Close()
+	var out []string
+	for _, name := range parseFile(tmp.Name(), rel).envFiles {
 		p := name
 		if rest, ok := strings.CutPrefix(p, "%h"); ok {
 			home, _ := os.UserHomeDir()

@@ -73,14 +73,17 @@ func TestValidateHints(t *testing.T) {
 	for _, want := range []string{
 		"PublishPort= has no effect here",
 		`vpn/gluetun.container names its container "gluetun" too`,
-		"EnvironmentFile=gone.env: " + fl.abs("vpn/gone.env") + " does not exist",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
 		}
 	}
-	if strings.Count(out, "Warning:") != 3 {
-		t.Errorf("want exactly three warnings:\n%s", out)
+	if strings.Count(out, "Warning:") != 2 {
+		t.Errorf("want exactly two warnings, none about files on disk:\n%s", out)
+	}
+	env := strings.Join(fl.EnvFileHints("vpn/slskd.container", "[Container]\nEnvironmentFile=there.env\nEnvironmentFile=gone.env\nEnvironmentFile=%t/later.env\n"), "\n")
+	if want := "EnvironmentFile=gone.env: " + fl.abs("vpn/gone.env") + " does not exist"; env != "Warning: "+want+", so the container will not start." {
+		t.Errorf("env file hints: %q", env)
 	}
 	// The container that owns the namespace publishes the ports, and an ordinary file gets no hints
 	if out := check("vpn/gluetun.container", "[Container]\nImage=gluetun\nContainerName=gluetun\nPublishPort=5030:5030\n"); out != "" {
