@@ -87,8 +87,8 @@
 
   async function remove() {
     if (busy || applying) return
-    const stop = !!file?.unit && confirm(`Stop ${file.unit} before deleting? (Cancel deletes without stopping.)`)
     if (!confirm(`Delete ${path}? A copy stays in the history.`)) return
+    const stop = !!file?.unit && confirm(`Also stop ${file.unit} first?\n\nOK stops it, Cancel deletes the file and leaves it running.`)
     busy = true
     working = 'Deleting (see Activity)…'
     try {
@@ -146,8 +146,8 @@
     {#if file?.kind === 'container'}
       <button disabled={busy || loading} onclick={() => (secretsOpen = true)} title="Move values into Podman secrets">Secrets</button>
     {/if}
-    <button class="ghost" disabled={busy || applying} onclick={move} title="Move or rename">⇄</button>
-    <button class="ghost danger" disabled={busy || applying} onclick={remove} title="Delete">🗑</button>
+    <button class="ghost" disabled={busy || applying} onclick={move} title="Move or rename" aria-label="Move or rename">⇄</button>
+    <button class="ghost danger" disabled={busy || applying} onclick={remove} title="Delete" aria-label="Delete">🗑</button>
   </div>
 
   {#if loading}
@@ -175,7 +175,7 @@
   {#if validation && !validation.ok}
     <div class="error-box">{validation.output}</div>
   {:else if validation?.skipped}
-    <div class="error-box">{validation.skipped}</div>
+    <div class="warn-box">{validation.skipped}</div>
   {:else if notice || validation}
     <div class="ok-box">
       {notice || 'Podman accepts this file.'}

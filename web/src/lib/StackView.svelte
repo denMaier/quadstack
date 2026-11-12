@@ -158,14 +158,14 @@
                 <td class="mono small">{cname ?? ''}</td>
                 <td class="actions">
                   {#if st?.active === 'active'}
-                    <button class="ghost" title="Restart" disabled={actionBusy} onclick={() => unitAction(f.unit!, 'restart')}>↻</button>
-                    <button class="ghost" title="Stop" disabled={actionBusy} onclick={() => unitAction(f.unit!, 'stop')}>■</button>
+                    <button class="ghost" title="Restart" aria-label="Restart" disabled={actionBusy} onclick={() => unitAction(f.unit!, 'restart')}>↻</button>
+                    <button class="ghost" title="Stop" aria-label="Stop" disabled={actionBusy} onclick={() => unitAction(f.unit!, 'stop')}>■</button>
                   {:else}
-                    <button class="ghost" title="Start" disabled={actionBusy} onclick={() => unitAction(f.unit!, 'start')}>▶</button>
+                    <button class="ghost" title="Start" aria-label="Start" disabled={actionBusy} onclick={() => unitAction(f.unit!, 'start')}>▶</button>
                   {/if}
-                  <button class="ghost" title="Logs" onclick={() => (panel = { kind: 'logs', title: 'Logs: ' + f.unit, url: wsURL('/ws/logs', { unit: f.unit! }) })}>☰</button>
+                  <button class="ghost" title="Logs" aria-label="Logs" onclick={() => (panel = { kind: 'logs', title: 'Logs: ' + f.unit, url: wsURL('/ws/logs', { unit: f.unit! }) })}>☰</button>
                   {#if me?.terminal && cname && st?.active === 'active' && f.kind === 'container'}
-                    <button class="ghost" title="Shell" onclick={() => (panel = { kind: 'exec', title: 'Shell: ' + cname, url: wsURL('/ws/exec', { container: cname }), interactive: true })}>⌘</button>
+                    <button class="ghost" title="Shell" aria-label="Shell" onclick={() => (panel = { kind: 'exec', title: 'Shell: ' + cname, url: wsURL('/ws/exec', { container: cname }), interactive: true })}>⌘</button>
                   {/if}
                 </td>
               </tr>

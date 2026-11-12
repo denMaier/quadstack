@@ -11,7 +11,8 @@
   const active = $derived(activity.items.filter(isActive).length)
   const shown = $derived(expanded ? activity.items : activity.items.slice(0, 5))
   const label = (state: string) => state.replaceAll('_', ' ')
-  const badge = (state: string) => state === 'succeeded' ? 'running' : ['failed', 'timed_out', 'cancelled', 'unknown'].includes(state) ? 'failed' : ['running', 'queued'].includes(state) ? 'busy' : 'stopped'
+  const badge = (state: string) => state === 'succeeded' ? 'running' : failedState(state) ? 'failed' : ['running', 'queued'].includes(state) ? 'busy' : 'stopped'
+  const failedState = (state: string) => ['failed', 'timed_out', 'cancelled', 'unknown'].includes(state)
   const stackFor = (unit: string) => stacks.find((stack) => stack.files.some((file) => file.unit === unit))
 
   function elapsed(start: string, end?: string) {
@@ -74,7 +75,8 @@
   {#if activity.warning}<div class="error-box" role="alert">{activity.warning}<button class="ghost" onclick={() => (activity.warning = '')}>Dismiss</button></div>{/if}
   {#if reloadError}<div class="error-box" role="alert">{reloadError}</div>{/if}
   {#each shown as operation (operation.id)}
-    <details open={isActive(operation) || ['failed', 'timed_out', 'cancelled', 'unknown'].includes(operation.state)}>
+    <!-- Only the latest failure opens by itself, so an old one does not fill the top of every page -->
+    <details open={isActive(operation) || (operation === activity.items[0] && failedState(operation.state))}>
       <summary>
         <span class={'dot ' + badge(operation.state)}></span>
         <span class="grow">{operation.label}</span>
