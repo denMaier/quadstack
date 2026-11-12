@@ -199,3 +199,41 @@ func TestResources(t *testing.T) {
 		t.Errorf("secrets = %+v", son.Secrets)
 	}
 }
+
+func TestNetnsEdges(t *testing.T) {
+	root := writeTree(t, map[string]string{
+		"vpn/gluetun.container": "[Container]\nImage=gluetun\nContainerName=gluetun\nNetwork=vpn.network\n",
+		"vpn/vpn.network":       "[Network]\n",
+		"vpn/slskd.container":   "[Container]\nImage=slskd\nNetwork=container:gluetun\n",
+		"qbit.container":        "[Container]\nImage=qbit\nNetwork=gluetun.container\n",
+		"lost.container":        "[Container]\nImage=lost\nNetwork=container:elsewhere\n",
+	})
+	inv, err := Scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]*QFile{}
+	for _, st := range inv.Stacks {
+		for _, f := range st.Files {
+			files[f.Path] = f
+		}
+	}
+	// The namespace is not a network, and the name after "container:" is kept
+	if f := files["vpn/slskd.container"]; f.NetnsOf != "gluetun" || f.NetnsUnit != "gluetun.service" || len(f.Networks) != 0 {
+		t.Errorf("slskd = %+v", f)
+	}
+	if f := files["qbit.container"]; f.NetnsOf != "gluetun.container" || f.NetnsUnit != "gluetun.service" {
+		t.Errorf("qbit = %+v", f)
+	}
+	// A container no Quadlet defines is named, but has no unit to order against
+	if f := files["lost.container"]; f.NetnsOf != "elsewhere" || f.NetnsUnit != "" {
+		t.Errorf("lost = %+v", f)
+	}
+	g := files["vpn/gluetun.container"]
+	if !reflect.DeepEqual(g.SharedBy, []string{"qbit.service", "slskd.service"}) || !reflect.DeepEqual(g.Networks, []string{"vpn.network"}) {
+		t.Errorf("gluetun = %+v", g)
+	}
+	if want := map[string]string{"slskd.service": "gluetun.service", "qbit.service": "gluetun.service"}; !reflect.DeepEqual(inv.netnsParents(), want) {
+		t.Errorf("parents = %v", inv.netnsParents())
+	}
+}

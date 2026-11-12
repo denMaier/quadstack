@@ -39,7 +39,14 @@ type QFile struct {
 	Autostart     bool   `json:"autostart"`
 	ParseError    string `json:"parseError,omitempty"`
 
-	Networks []string    `json:"networks,omitempty"` // Network= values without options
+	Networks []string `json:"networks,omitempty"` // Network= values without options
+	// A container that joins another container's network namespace (Network=container:<name>
+	// or Network=<file>.container) has no network of its own: NetnsOf is what the file names,
+	// NetnsUnit the unit of the Quadlet that defines it, if one does.
+	NetnsOf   string `json:"netnsOf,omitempty"`
+	NetnsUnit string `json:"netnsUnit,omitempty"`
+	// SharedBy lists the units of the containers that join this container's network namespace
+	SharedBy []string    `json:"sharedBy,omitempty"`
 	Mounts   []Mount     `json:"mounts,omitempty"`
 	Secrets  []SecretRef `json:"secrets,omitempty"`
 }
@@ -165,7 +172,17 @@ func parseFile(abs, rel string) *QFile {
 			f.Name = o.Value
 		case (o.Section == "Container" || o.Section == "Pod" || o.Section == "Kube") && o.Name == "Network":
 			for _, n := range strings.Fields(o.Value) {
-				f.Networks = append(f.Networks, strings.SplitN(n, ":", 2)[0])
+				name, rest, _ := strings.Cut(n, ":")
+				switch {
+				case o.Section != "Container":
+					f.Networks = append(f.Networks, name)
+				case name == "container":
+					f.NetnsOf = rest
+				case strings.HasSuffix(name, ".container"):
+					f.NetnsOf = name
+				default:
+					f.Networks = append(f.Networks, name)
+				}
 			}
 		case (o.Section == "Container" || o.Section == "Pod") && o.Name == "Volume":
 			f.Mounts = append(f.Mounts, parseVolume(o.Value))
@@ -408,7 +425,47 @@ func Scan(root string) (*Inventory, error) {
 		}
 	}
 	sort.Slice(inv.Resources, func(i, j int) bool { return inv.Resources[i].Path < inv.Resources[j].Path })
+	inv.linkNetns()
 	return inv, nil
+}
+
+// linkNetns connects each container that joins another's network namespace with the Quadlet
+// that defines that container: by file name for Network=<file>.container, as quadlet resolves
+// it, and by container name for Network=container:<name>, as Podman does.
+func (inv *Inventory) linkNetns() {
+	var containers []*QFile
+	for _, st := range inv.Stacks {
+		for _, f := range st.Files {
+			if f.Kind == "container" {
+				containers = append(containers, f)
+			}
+		}
+	}
+	for _, f := range containers {
+		if f.NetnsOf == "" {
+			continue
+		}
+		for _, parent := range containers {
+			if parent != f && (path.Base(parent.Path) == f.NetnsOf || parent.ContainerName == f.NetnsOf) {
+				f.NetnsUnit = parent.Unit
+				parent.SharedBy = append(parent.SharedBy, f.Unit)
+				break
+			}
+		}
+	}
+}
+
+// netnsParents maps the unit of each container that joins a network namespace to the unit it joins
+func (inv *Inventory) netnsParents() map[string]string {
+	out := map[string]string{}
+	for _, st := range inv.Stacks {
+		for _, f := range st.Files {
+			if f.NetnsUnit != "" {
+				out[f.Unit] = f.NetnsUnit
+			}
+		}
+	}
+	return out
 }
 
 // uses reports whether a unit of the stack refers to a network or volume by file or Podman name

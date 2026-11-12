@@ -13,6 +13,9 @@ export type QFile = {
   autostart: boolean
   parseError?: string
   networks?: string[]
+  netnsOf?: string // the container whose network namespace this one joins
+  netnsUnit?: string // its unit, when a Quadlet here defines it
+  sharedBy?: string[] // units of the containers that join this one's network namespace
   mounts?: Mount[]
   secrets?: SecretRef[]
 }

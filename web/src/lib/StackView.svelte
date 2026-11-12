@@ -20,7 +20,7 @@
   // What the terminal panel shows: the stack's logs, one unit's logs, an image pull or a shell
   let panel = $state<{ kind: 'logs' | 'exec'; title: string; url: string; interactive?: boolean }>()
 
-  const wiring = $derived(stack.files.filter((f) => f.networks?.length || f.mounts?.length || f.secrets?.length))
+  const wiring = $derived(stack.files.filter((f) => f.networks?.length || f.netnsOf || f.sharedBy?.length || f.mounts?.length || f.secrets?.length))
   const isResource = (n: string) => catalog.resources.some((r) => r.file.path.split('/').pop() === n || r.file.name === n)
   const units = $derived(stack.files.filter((f) => f.unit && ['container', 'pod', 'kube'].includes(f.kind)).map((f) => f.unit!))
   const actionBusy = $derived(!!busy || activity.items.some((operation) => isActive(operation) && (operation.stack === stack.id || operation.steps.some((step) => step.unit && units.includes(step.unit)))))
@@ -174,6 +174,21 @@
               {#each f.networks ?? [] as n}
                 <div class="w"><span class="tag">net</span>{#if isResource(n)}<a href="#/resources" class="mono">{n}</a>{:else}<span class="mono">{n}</span>{/if}</div>
               {/each}
+              {#if f.netnsOf}
+                <div class="w">
+                  <span class="tag">net</span>
+                  <span class="muted">shares the network of</span>
+                  <span class="mono">{f.netnsUnit ?? f.netnsOf}</span>
+                  {#if !f.netnsUnit}<span class="muted opts">no Quadlet here defines it</span>{/if}
+                </div>
+              {/if}
+              {#if f.sharedBy?.length}
+                <div class="w">
+                  <span class="tag">net</span>
+                  <span class="muted">shared with</span>
+                  <span class="mono">{f.sharedBy.join(', ')}</span>
+                </div>
+              {/if}
               {#each f.mounts ?? [] as m}
                 <div class="w" title={m.options}>
                   <span class="tag">{m.kind === 'bind' ? 'bind' : m.kind === 'quadlet' ? 'vol' : m.kind}</span>
