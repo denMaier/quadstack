@@ -53,7 +53,7 @@ Network=gluetun.container
 
 - The container has no network of its own. Without the VPN container it cannot start; that is Podman's behavior, and Quadstack does nothing that would give it another network.
 - Publish its ports on the VPN container. `PublishPort=` on the container itself is ignored by Podman.
-- Stopping or restarting the VPN container takes the network away from the containers that share it. Quadstack therefore stops those first and starts them again after a restart, and shows them under **Mounts, networks & secrets**.
+- Stopping or restarting the VPN container takes the network away from the containers that share it, and Podman refuses to replace a container while another one still depends on it, so with `Network=container:<name>` the restart itself fails. Quadstack therefore stops those containers first and starts them again after a restart, and shows them under **Mounts, networks & secrets**.
 
 ## Action feedback and recovery
 
