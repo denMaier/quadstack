@@ -20,13 +20,15 @@ Homelab scale: one account, a few operators who all have the account's full righ
 
 The Quadlet directory is read from scratch for every request (`Scan` in `stacks.go`); nothing about it is cached or stored elsewhere. A folder is a stack. At the top level, a `.pod` and the containers that set `Pod=` to it form a stack, and every other unit is a stack of its own. Top-level networks and volumes are shared resources. Symlinked files and folders are reported, not managed.
 
-Writes are atomic (temporary file and rename) and keep the file's mode. Before a file is changed, moved or deleted, its current content goes into `history/<path>/<unix nanoseconds>`. A move takes the history along. Up to 50 versions are kept per file. Deleted files are found by their history.
+Every file access, from the web UI or MCP, opens each path component with `O_NOFOLLOW` relative to an open directory, so symlinks and concurrent renames cannot redirect it. Writes are atomic (temporary file and rename) and keep the file's mode. Before a file is changed, moved or deleted, its current content goes into `history/<path>/<unix nanoseconds>`. A move takes the history along. Up to 50 versions are kept per file. Deleted files are found by their history.
 
-**Validation** copies every managed file into a scratch directory, puts the new content in place and runs Podman's `quadlet -dryrun -user` on it, so references between files resolve. Only messages about the edited file count. A timeout, a crash or a generator that cannot run fails the check.
+**Validation** copies every managed file into a scratch directory, puts the new content in place and runs Podman's `quadlet -dryrun -user` on it, so references between files resolve. Only messages about the edited file count. A timeout, a crash or a generator that cannot run fails the check. The verdict is Podman's alone; Quadstack only adds warnings the generator cannot give because they depend on other files or the disk (`hints`), and these never block a save.
 
 ## Actions
 
 Every changing action (start, stop, restart, reload, delete, pull, prune, secrets) is an **operation** in `operations.go`: queued in memory, run one at a time, with a deadline, per-step state and output. The web API returns the operation at once and the UI follows it; MCP calls wait for it. A lost connection or a timeout is reported as `unknown` or `timed_out`, never as success, and nothing is retried automatically. Operations are lost on restart.
+
+**Shared network namespaces.** `Scan` records which container joins another's network namespace and which Quadlet defines that container (`linkNetns`). Every unit action is planned around these edges (`planUnits`): dependents are stopped before the container they depend on is stopped or restarted and started again after a restart, and on a start that container comes first. Only dependents that are part of the action or running now are included. Quadstack sends each step itself instead of relying on `Requires=`, which `Network=container:<name>` does not add.
 
 ## Sign-in
 
@@ -41,8 +43,6 @@ OpenID Connect with PKCE, state and nonce, in `auth.go`. After the callback the 
 3. works out the stack of every file, unit and container it touches, before and after the change, and checks the permission for each;
 4. is checked once more when its operation leaves the queue;
 5. is written to the audit log with its result.
-
-MCP file access opens every path component with `O_NOFOLLOW` relative to an open directory, so symlinks and concurrent renames cannot redirect it.
 
 ## Deployment
 

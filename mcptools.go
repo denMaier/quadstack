@@ -186,6 +186,20 @@ func add[In any](t *toolset, perms []string, tool *mcp.Tool, h func(ctx context.
 	})
 }
 
+// needSteps fails unless the grant allows perm for the stack of every unit an action touches,
+// including the containers in other stacks that share a network with one of them
+func needSteps(g Grant, perm string, inv *Inventory, steps []unitStep, covered []string) error {
+	for _, step := range steps {
+		if slices.Contains(covered, step.unit) {
+			continue
+		}
+		if err := need(g, perm, scopeOfUnit(inv, step.unit)); err != nil {
+			return fmt.Errorf("%w (the action also has to %s %s)", err, step.action, step.unit)
+		}
+	}
+	return nil
+}
+
 // need fails unless the grant allows perm for scope
 func need(g Grant, perm, scope string) error {
 	if !g.Allows(perm, scope) {
@@ -367,7 +381,7 @@ func (t *toolset) register() {
 					return nil, err
 				}
 			}
-			content, err := s.files.mcpRead(rel)
+			content, err := s.files.Read(rel)
 			if err != nil {
 				return nil, err
 			}
@@ -381,7 +395,7 @@ func (t *toolset) register() {
 		if err != nil {
 			return "", err
 		}
-		if _, err := s.files.mcpRead(rel); err == nil {
+		if _, err := s.files.Read(rel); err == nil {
 			if err := need(g, "files.write", scopeFor(inv, rel)); err != nil {
 				return "", err
 			}
@@ -435,24 +449,37 @@ func (t *toolset) register() {
 			if err != nil {
 				return nil, err
 			}
+			var restart []operationTask
 			if apply == "restart" {
 				if err := need(g, "units.restart", scope); err != nil {
 					return nil, err
+				}
+				// planned on the Quadlets as they will be, and checked before anything is saved
+				inv, err := s.files.ScanWith(rel, &in.Content)
+				if err != nil {
+					return nil, err
+				}
+				if file := fileIn(inv, rel); file != nil && file.Unit != "" {
+					steps, err := s.unitPlan(ctx, inv, []string{file.Unit}, "restart")
+					if err != nil {
+						return nil, err
+					}
+					if err := needSteps(g, "units.restart", inv, steps, []string{file.Unit}); err != nil {
+						return nil, err
+					}
+					restart = s.unitTasks(inv, steps)
 				}
 			}
 			v := s.files.Validate(ctx, rel, &in.Content)
 			if !v.OK {
 				return nil, fmt.Errorf("validation failed, nothing was saved:\n%s", v.Output)
 			}
-			if err := s.files.mcpWrite(rel, in.Content); err != nil {
+			if err := s.files.Write(rel, in.Content); err != nil {
 				return nil, err
 			}
 			res := map[string]any{"saved": rel, "stack": scope, "validation": v}
 			if apply != "none" {
-				tasks := []operationTask{simpleTask("daemon-reload", "", s.systemd.Reload)}
-				if file := parseFile(s.files.abs(rel), rel); apply == "restart" && file.Unit != "" {
-					tasks = append(tasks, simpleTask("restart "+file.Unit, file.Unit, func(ctx context.Context) error { return s.systemd.Action(ctx, file.Unit, "restart") }))
-				}
+				tasks := append([]operationTask{simpleTask("daemon-reload", "", s.systemd.Reload)}, restart...)
 				if err := s.perform(ctx, "Apply "+rel, scope, tasks, false); err != nil {
 					res["applyError"] = err.Error()
 				}
@@ -479,7 +506,7 @@ func (t *toolset) register() {
 			if err := need(g, "files.delete", scope); err != nil {
 				return nil, err
 			}
-			if _, err := s.files.mcpRead(rel); err != nil {
+			if _, err := s.files.Read(rel); err != nil {
 				return nil, err
 			}
 			var unit string
@@ -491,9 +518,16 @@ func (t *toolset) register() {
 				if err := need(g, "units.stop", scope); err != nil {
 					return nil, err
 				}
-				tasks = append(tasks, simpleTask("stop "+unit, unit, func(ctx context.Context) error { return s.systemd.Action(ctx, unit, "stop") }))
+				steps, err := s.unitPlan(ctx, inv, []string{unit}, "stop")
+				if err != nil {
+					return nil, err
+				}
+				if err := needSteps(g, "units.stop", inv, steps, []string{unit}); err != nil {
+					return nil, err
+				}
+				tasks = s.unitTasks(inv, steps)
 			}
-			tasks = append(tasks, simpleTask("Delete "+rel, "", func(context.Context) error { return s.files.mcpDelete(rel) }), simpleTask("daemon-reload after deletion", "", s.systemd.Reload))
+			tasks = append(tasks, simpleTask("Delete "+rel, "", func(context.Context) error { return s.files.Delete(rel) }), simpleTask("daemon-reload after deletion", "", s.systemd.Reload))
 			err = s.perform(ctx, "Delete "+rel, scope, tasks, false)
 			return map[string]string{"deleted": rel}, err
 		})
@@ -541,7 +575,14 @@ func (t *toolset) register() {
 			if err := need(g, "units."+in.Action, scopeOfUnit(inv, in.Unit)); err != nil {
 				return nil, err
 			}
-			err = s.perform(ctx, in.Action+" "+in.Unit, "", []operationTask{simpleTask(in.Action+" "+in.Unit, in.Unit, func(ctx context.Context) error { return s.systemd.Action(ctx, in.Unit, in.Action) })}, false)
+			steps, err := s.unitPlan(ctx, inv, []string{in.Unit}, in.Action)
+			if err != nil {
+				return nil, err
+			}
+			if err := needSteps(g, "units."+in.Action, inv, steps, []string{in.Unit}); err != nil {
+				return nil, err
+			}
+			err = s.perform(ctx, in.Action+" "+in.Unit, "", s.unitTasks(inv, steps), false)
 			return map[string]bool{"ok": err == nil}, err
 		})
 
@@ -553,15 +594,22 @@ func (t *toolset) register() {
 			if err := need(g, "units."+in.Action, in.Stack); err != nil {
 				return nil, err
 			}
-			st, err := FindStack(s.cfg.QuadletDir, in.Stack)
+			inv, err := Scan(s.cfg.QuadletDir)
 			if err != nil {
+				return nil, err
+			}
+			st := inv.stack(in.Stack)
+			if st == nil {
 				return nil, errors.New("unknown stack")
 			}
-			var tasks []operationTask
-			for _, unit := range st.Units() {
-				tasks = append(tasks, simpleTask(in.Action+" "+unit, unit, func(ctx context.Context) error { return s.systemd.Action(ctx, unit, in.Action) }))
+			steps, err := s.unitPlan(ctx, inv, st.Units(), in.Action)
+			if err != nil {
+				return nil, err
 			}
-			err = s.perform(ctx, in.Action+" stack "+st.Name, st.ID, tasks, true)
+			if err := needSteps(g, "units."+in.Action, inv, steps, st.Units()); err != nil {
+				return nil, err
+			}
+			err = s.perform(ctx, in.Action+" stack "+st.Name, st.ID, s.unitTasks(inv, steps), true)
 			return map[string]any{"ok": err == nil, "units": st.Units()}, err
 		})
 

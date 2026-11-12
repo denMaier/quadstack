@@ -20,7 +20,7 @@
   // What the terminal panel shows: the stack's logs, one unit's logs, an image pull or a shell
   let panel = $state<{ kind: 'logs' | 'exec'; title: string; url: string; interactive?: boolean }>()
 
-  const wiring = $derived(stack.files.filter((f) => f.networks?.length || f.mounts?.length || f.secrets?.length))
+  const wiring = $derived(stack.files.filter((f) => f.networks?.length || f.netnsOf || f.sharedBy?.length || f.mounts?.length || f.secrets?.length))
   const isResource = (n: string) => catalog.resources.some((r) => r.file.path.split('/').pop() === n || r.file.name === n)
   const units = $derived(stack.files.filter((f) => f.unit && ['container', 'pod', 'kube'].includes(f.kind)).map((f) => f.unit!))
   const actionBusy = $derived(!!busy || activity.items.some((operation) => isActive(operation) && (operation.stack === stack.id || operation.steps.some((step) => step.unit && units.includes(step.unit)))))
@@ -53,8 +53,19 @@
     }
   }
 
-  const stackAction = (action: string) => run(action, () => api.stackAction(stack.id, action))
-  const unitAction = (unit: string, action: string) => run(action + ' ' + unit, () => api.unitAction(unit, action))
+  // Containers that share the network of one of the units acted on lose it when that unit
+  // stops or restarts, so the server stops them first; say so before it happens
+  function confirmShared(acted: string[], action: string) {
+    const parents = stack.files.filter((f) => f.unit && acted.includes(f.unit))
+    const others = [...new Set(parents.flatMap((f) => f.sharedBy ?? []))].filter((u) => !acted.includes(u))
+    if (action === 'start' || !others.length) return true
+    const after = action === 'restart' ? ' and started again afterwards' : ''
+    const of = parents.filter((f) => f.sharedBy?.length).map((f) => f.unit).join(', ')
+    return confirm(`Sharing the network of ${of}: ${others.join(', ')}.\n\nThose that are running are stopped first${after}. Continue?`)
+  }
+
+  const stackAction = (action: string) => confirmShared(units, action) && run(action, () => api.stackAction(stack.id, action))
+  const unitAction = (unit: string, action: string) => confirmShared([unit], action) && run(action + ' ' + unit, () => api.unitAction(unit, action))
 
   async function update() {
     await run('Pulling images (see Activity)', () => api.pull(stack.id))
@@ -147,14 +158,14 @@
                 <td class="mono small">{cname ?? ''}</td>
                 <td class="actions">
                   {#if st?.active === 'active'}
-                    <button class="ghost" title="Restart" disabled={actionBusy} onclick={() => unitAction(f.unit!, 'restart')}>↻</button>
-                    <button class="ghost" title="Stop" disabled={actionBusy} onclick={() => unitAction(f.unit!, 'stop')}>■</button>
+                    <button class="ghost" title="Restart" aria-label="Restart" disabled={actionBusy} onclick={() => unitAction(f.unit!, 'restart')}>↻</button>
+                    <button class="ghost" title="Stop" aria-label="Stop" disabled={actionBusy} onclick={() => unitAction(f.unit!, 'stop')}>■</button>
                   {:else}
-                    <button class="ghost" title="Start" disabled={actionBusy} onclick={() => unitAction(f.unit!, 'start')}>▶</button>
+                    <button class="ghost" title="Start" aria-label="Start" disabled={actionBusy} onclick={() => unitAction(f.unit!, 'start')}>▶</button>
                   {/if}
-                  <button class="ghost" title="Logs" onclick={() => (panel = { kind: 'logs', title: 'Logs: ' + f.unit, url: wsURL('/ws/logs', { unit: f.unit! }) })}>☰</button>
+                  <button class="ghost" title="Logs" aria-label="Logs" onclick={() => (panel = { kind: 'logs', title: 'Logs: ' + f.unit, url: wsURL('/ws/logs', { unit: f.unit! }) })}>☰</button>
                   {#if me?.terminal && cname && st?.active === 'active' && f.kind === 'container'}
-                    <button class="ghost" title="Shell" onclick={() => (panel = { kind: 'exec', title: 'Shell: ' + cname, url: wsURL('/ws/exec', { container: cname }), interactive: true })}>⌘</button>
+                    <button class="ghost" title="Shell" aria-label="Shell" onclick={() => (panel = { kind: 'exec', title: 'Shell: ' + cname, url: wsURL('/ws/exec', { container: cname }), interactive: true })}>⌘</button>
                   {/if}
                 </td>
               </tr>
@@ -174,6 +185,21 @@
               {#each f.networks ?? [] as n}
                 <div class="w"><span class="tag">net</span>{#if isResource(n)}<a href="#/resources" class="mono">{n}</a>{:else}<span class="mono">{n}</span>{/if}</div>
               {/each}
+              {#if f.netnsOf}
+                <div class="w">
+                  <span class="tag">net</span>
+                  <span class="muted">shares the network of</span>
+                  <span class="mono">{f.netnsUnit ?? f.netnsOf}</span>
+                  {#if !f.netnsUnit}<span class="muted opts">no Quadlet here defines it</span>{/if}
+                </div>
+              {/if}
+              {#if f.sharedBy?.length}
+                <div class="w">
+                  <span class="tag">net</span>
+                  <span class="muted">shared with</span>
+                  <span class="mono">{f.sharedBy.join(', ')}</span>
+                </div>
+              {/if}
               {#each f.mounts ?? [] as m}
                 <div class="w" title={m.options}>
                   <span class="tag">{m.kind === 'bind' ? 'bind' : m.kind === 'quadlet' ? 'vol' : m.kind}</span>

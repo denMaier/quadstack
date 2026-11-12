@@ -30,16 +30,14 @@ func (fl *Files) abs(rel string) string {
 	return filepath.Join(fl.cfg.QuadletDir, filepath.FromSlash(rel))
 }
 
-func (fl *Files) Read(rel string) (string, error) {
-	b, err := os.ReadFile(fl.abs(rel))
-	return string(b), err
-}
+var errLinked = errors.New("symlinked files and folders are not managed by Quadstack")
 
-// mcpParent opens every directory without following links. Holding each directory
-// descriptor prevents a concurrent rename from redirecting the operation.
-func (fl *Files) mcpParent(rel string, create bool) (int, string, error) {
+// parent opens every directory of rel without following links, for the web UI and MCP alike.
+// Holding each directory descriptor prevents a concurrent rename from redirecting the operation.
+func (fl *Files) parent(rel string, create bool) (int, string, error) {
 	parts := strings.Split(rel, "/")
-	fd, err := unix.Open(fl.cfg.QuadletDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	// The Quadlet directory is the operator's setting, so it may itself be a link
+	fd, err := unix.Open(fl.cfg.QuadletDir, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return -1, "", err
 	}
@@ -50,6 +48,9 @@ func (fl *Files) mcpParent(rel string, create bool) (int, string, error) {
 				next, e = unix.Openat(fd, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 			}
 		}
+		if e != nil {
+			e = linkErr(fd, part, e)
+		}
 		unix.Close(fd)
 		if e != nil {
 			return -1, "", e
@@ -59,10 +60,19 @@ func (fl *Files) mcpParent(rel string, create bool) (int, string, error) {
 	return fd, parts[len(parts)-1], nil
 }
 
-func mcpReadAt(fd int, name string) ([]byte, fs.FileMode, error) {
+// linkErr names the reason when opening name below fd failed because it is a symlink
+func linkErr(fd int, name string, err error) error {
+	var st unix.Stat_t
+	if unix.Fstatat(fd, name, &st, unix.AT_SYMLINK_NOFOLLOW) == nil && st.Mode&unix.S_IFMT == unix.S_IFLNK {
+		return errLinked
+	}
+	return err
+}
+
+func readAt(fd int, name string) ([]byte, fs.FileMode, error) {
 	f, err := unix.Openat(fd, name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, linkErr(fd, name, err)
 	}
 	file := os.NewFile(uintptr(f), name)
 	defer file.Close()
@@ -77,26 +87,27 @@ func mcpReadAt(fd int, name string) ([]byte, fs.FileMode, error) {
 	return b, st.Mode().Perm(), err
 }
 
-func (fl *Files) mcpRead(rel string) (string, error) {
-	fd, name, err := fl.mcpParent(rel, false)
+func (fl *Files) Read(rel string) (string, error) {
+	fd, name, err := fl.parent(rel, false)
 	if err != nil {
 		return "", err
 	}
 	defer unix.Close(fd)
-	b, _, err := mcpReadAt(fd, name)
+	b, _, err := readAt(fd, name)
 	return string(b), err
 }
 
-func (fl *Files) mcpWrite(rel, content string) error {
-	fd, name, err := fl.mcpParent(rel, true)
+// Write saves content atomically, keeping the previous version in the history
+func (fl *Files) Write(rel, content string) error {
+	fd, name, err := fl.parent(rel, true)
 	if err != nil {
 		return err
 	}
 	defer unix.Close(fd)
-	old, mode, err := mcpReadAt(fd, name)
+	old, mode, err := readAt(fd, name)
 	if err == nil {
 		if err = fl.snapshotContent(rel, old); err != nil {
-			return err
+			return fmt.Errorf("saving history: %w", err)
 		}
 	} else if errors.Is(err, unix.ENOENT) {
 		mode = 0o600
@@ -124,20 +135,49 @@ func (fl *Files) mcpWrite(rel, content string) error {
 	return unix.Renameat(fd, tmp, fd, name)
 }
 
-func (fl *Files) mcpDelete(rel string) error {
-	fd, name, err := fl.mcpParent(rel, false)
+func (fl *Files) Delete(rel string) error {
+	fd, name, err := fl.parent(rel, false)
 	if err != nil {
 		return err
 	}
 	defer unix.Close(fd)
-	b, _, err := mcpReadAt(fd, name)
+	b, _, err := readAt(fd, name)
 	if err != nil {
 		return err
 	}
 	if err = fl.snapshotContent(rel, b); err != nil {
-		return err
+		return fmt.Errorf("saving history: %w", err)
 	}
 	return unix.Unlinkat(fd, name, 0)
+}
+
+// Move renames a file and takes its history along, so earlier versions stay with it
+func (fl *Files) Move(from, to string) error {
+	src, name, err := fl.parent(from, false)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(src)
+	b, _, err := readAt(src, name)
+	if err != nil {
+		return err
+	}
+	dst, toName, err := fl.parent(to, true)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(dst)
+	var st unix.Stat_t
+	if unix.Fstatat(dst, toName, &st, unix.AT_SYMLINK_NOFOLLOW) == nil {
+		return fmt.Errorf("%s already exists", to)
+	}
+	if err := fl.snapshotContent(from, b); err != nil {
+		return fmt.Errorf("saving history: %w", err)
+	}
+	if err := unix.Renameat(src, name, dst, toName); err != nil {
+		return err
+	}
+	return fl.moveHistory(from, to)
 }
 
 // Validation is the generator's verdict on the directory with one file replaced
@@ -237,15 +277,67 @@ func (fl *Files) Validate(ctx context.Context, rel string, content *string) Vali
 	v.Output, problems = quadletMessages(strings.ReplaceAll(stderr.String(), tmp+string(filepath.Separator), ""), rel)
 	if content != nil {
 		if f := parseFile(target, rel); f.Unit != "" {
-			v.Generated = generatedUnit(stdout.String(), f.Unit)
+			// Relative paths resolve against the unit's directory, which is the scratch copy here
+			v.Generated = generatedUnit(strings.ReplaceAll(stdout.String(), tmp, fl.cfg.QuadletDir), f.Unit)
 		}
 	}
 	// quadlet exits non-zero when any file fails to convert; only this file's errors block the save
 	v.OK = runErr == nil || len(problems) == 0
 	if !v.OK {
 		v.Output = strings.Join(problems, "\n")
+	} else if content != nil {
+		v.Output = strings.TrimPrefix(strings.Join(append([]string{v.Output}, fl.hints(tmp, rel)...), "\n"), "\n")
 	}
 	return v
+}
+
+// hints are warnings about a container file the generator accepts, because only the other
+// files or the disk show the problem. They never block a save.
+func (fl *Files) hints(scratch, rel string) []string {
+	inv, err := Scan(scratch)
+	if err != nil {
+		return nil
+	}
+	var f *QFile
+	var containers []*QFile
+	for _, st := range inv.Stacks {
+		for _, other := range st.Files {
+			if other.Path == rel {
+				f = other
+			} else if other.Kind == "container" {
+				containers = append(containers, other)
+			}
+		}
+	}
+	if f == nil || f.Kind != "container" {
+		return nil
+	}
+	var out []string
+	if f.NetnsOf != "" && f.publishes {
+		out = append(out, fmt.Sprintf("Warning: PublishPort= has no effect here: this container shares the network of %s, and Podman discards its port mappings. Publish the port on %s instead.", f.NetnsOf, f.NetnsOf))
+	}
+	for _, other := range containers {
+		if other.ContainerName == f.ContainerName && !strings.Contains(f.ContainerName, "%") {
+			out = append(out, fmt.Sprintf("Warning: %s names its container %q too. Each of the two units replaces the other's container when it starts.", other.Path, f.ContainerName))
+		}
+	}
+	for _, name := range f.envFiles {
+		p := name
+		if rest, ok := strings.CutPrefix(p, "%h"); ok {
+			home, _ := os.UserHomeDir()
+			p = home + rest
+		}
+		switch {
+		case strings.HasPrefix(p, "%"):
+			continue // only systemd can resolve other specifiers
+		case !filepath.IsAbs(p):
+			p = filepath.Join(fl.cfg.QuadletDir, filepath.Dir(filepath.FromSlash(rel)), p)
+		}
+		if _, err := os.Stat(p); errors.Is(err, fs.ErrNotExist) {
+			out = append(out, fmt.Sprintf("Warning: EnvironmentFile=%s: %s does not exist, so the container will not start.", name, p))
+		}
+	}
+	return out
 }
 
 // quadletMessages keeps the generator's messages about rel, without the "quadlet-generator[pid]: "
@@ -283,84 +375,11 @@ func generatedUnit(out, unitName string) string {
 	return strings.TrimSpace(rest)
 }
 
-// Write saves content atomically, keeping the previous version in the history
-func (fl *Files) Write(rel, content string) error {
-	abs := fl.abs(rel)
-	if err := refuseLink(abs); err != nil {
-		return err
-	}
-	mode := fs.FileMode(0o600)
-	if st, err := os.Stat(abs); err == nil {
-		mode = st.Mode().Perm()
-		if err := fl.snapshot(rel); err != nil {
-			return fmt.Errorf("saving history: %w", err)
-		}
-	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(abs), ".quadstack-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.WriteString(content); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), abs)
-}
-
 func (fl *Files) Create(rel, content string) error {
-	if _, err := os.Stat(fl.abs(rel)); err == nil {
+	if _, err := os.Lstat(fl.abs(rel)); err == nil {
 		return fmt.Errorf("%s already exists", rel)
 	}
 	return fl.Write(rel, content)
-}
-
-// refuseLink keeps writes from replacing a symlink, or changing what it points to
-func refuseLink(abs string) error {
-	if st, err := os.Lstat(abs); err == nil && st.Mode()&fs.ModeSymlink != 0 {
-		return errors.New("symlinked files are not managed by Quadstack")
-	}
-	return nil
-}
-
-func (fl *Files) Delete(rel string) error {
-	if err := refuseLink(fl.abs(rel)); err != nil {
-		return err
-	}
-	if err := fl.snapshot(rel); err != nil {
-		return fmt.Errorf("saving history: %w", err)
-	}
-	return os.Remove(fl.abs(rel))
-}
-
-// Move renames a file and takes its history along, so earlier versions stay with it
-func (fl *Files) Move(from, to string) error {
-	if err := refuseLink(fl.abs(from)); err != nil {
-		return err
-	}
-	if _, err := os.Lstat(fl.abs(to)); err == nil {
-		return fmt.Errorf("%s already exists", to)
-	}
-	if err := fl.snapshot(from); err != nil {
-		return fmt.Errorf("saving history: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(fl.abs(to)), 0o755); err != nil {
-		return err
-	}
-	if err := os.Rename(fl.abs(from), fl.abs(to)); err != nil {
-		return err
-	}
-	return fl.moveHistory(from, to)
 }
 
 // CreateStack makes a stack directory
@@ -386,14 +405,6 @@ type Version struct {
 
 func (fl *Files) historyDir(rel string) string {
 	return filepath.Join(fl.cfg.StateDir, "history", filepath.FromSlash(rel))
-}
-
-func (fl *Files) snapshot(rel string) error {
-	b, err := os.ReadFile(fl.abs(rel))
-	if err != nil {
-		return err
-	}
-	return fl.snapshotContent(rel, b)
 }
 
 func (fl *Files) snapshotContent(rel string, b []byte) error {

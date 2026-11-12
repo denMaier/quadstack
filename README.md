@@ -14,7 +14,7 @@ Quadstack runs as a user service of the account that owns the Quadlets, with no 
   - Drop-ins (`name.container.d/*.conf`) and `.env` files are listed with their stack.
   - Symlinked files and folders are not managed: Quadstack lists them in a warning and never writes through them. Their units still run, because quadlet follows links.
 - **Editor.** CodeMirror, with completion of Quadlet keys and sections.
-  - **Check** runs Podman's own generator (`quadlet -dryrun -user`) on a scratch copy of the whole directory, so references between files resolve. A file Podman rejects is not saved unless you insist.
+  - **Check** runs Podman's own generator (`quadlet -dryrun -user`) on a scratch copy of the whole directory, so references between files resolve. A file Podman rejects is not saved unless you insist. It also warns, without blocking, about three things the generator cannot see: an `EnvironmentFile=` that does not exist, a `ContainerName=` another file uses too, and `PublishPort=` on a container that shares another container's network.
   - **Show generated unit** shows the systemd service Quadlet will produce.
   - **Save & reload** runs `daemon-reload`. **Deploy** also restarts the unit.
 - **History, without git.** Every save, move or delete first keeps the previous version under `~/.local/state/quadstack/history`, for the last 50 versions per file. A moved file takes its history along. You can diff any version against the editor and load it back. Deleted files are listed on the start page, where you can restore them. **Forget** drops a file's saved versions for good, for example old credentials in an `.env` file.
@@ -38,9 +38,28 @@ Quadstack runs as a user service of the account that owns the Quadlets, with no 
 - An OIDC client whose redirect URI is `https://<your host>/auth/callback`.
 - A reverse proxy with TLS in front of Quadstack.
 
+## Containers behind a VPN container
+
+A container can use another container's network instead of its own, for example everything that must only talk through a VPN container such as gluetun:
+
+```ini
+# slskd.container
+[Container]
+Image=docker.io/slskd/slskd:latest
+Network=gluetun.container
+```
+
+`Network=gluetun.container` names the Quadlet file. Prefer it to `Network=container:gluetun`: only for this form does Podman add `Requires=` and `After=`, so systemd starts the VPN container first at boot and restarts both together after an auto-update. Quadstack understands both forms.
+
+- The container has no network of its own. Without the VPN container it cannot start; that is Podman's behavior, and Quadstack does nothing that would give it another network.
+- Publish its ports on the VPN container. `PublishPort=` on the container itself is ignored by Podman.
+- Stopping or restarting the VPN container takes the network away from the containers that share it, and Podman refuses to replace a container while another one still depends on it, so with `Network=container:<name>` the restart itself fails. Quadstack therefore stops those containers first and starts them again after a restart, and shows them under **Mounts, networks & secrets**.
+
 ## Action feedback and recovery
 
 Activity keeps the 50 most recent operations in memory. Web actions continue on the server after navigation, page reloads, or a dropped browser connection; restarting Quadstack clears this history. Operations run one at a time to avoid replacing each other's systemd jobs. The queue accepts at most 16 pending operations. A normal operation has a five-minute deadline, including queue time; image-pull operations have fifteen minutes. Individual API and D-Bus calls also have deadlines.
+
+A container that shares another container's network (`Network=container:<name>` or `Network=<file>.container`, typically behind a VPN container) loses that network when the other container stops or restarts. So an action on the other container includes it: it is stopped first, and after a restart started again, each as its own step. Containers that were not running stay stopped. See [Containers behind a VPN container](#containers-behind-a-vpn-container).
 
 Each step reports queued, running, succeeded, failed, timed out, cancelled, unknown, or skipped. Deploy does not restart a unit if daemon-reload fails, and deletion does not remove a file if its requested stop fails. A successful systemd job means systemd completed that job, not that the application passed a health check. A timeout or lost connection does not prove that an already-submitted job or exec command stopped. Inspect its state and logs before retrying; Quadstack never automatically retries a mutating request.
 

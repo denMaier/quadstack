@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -17,10 +19,17 @@ import (
 type fakeSystemdClient struct {
 	action func(context.Context, string, string) error
 	reload func(context.Context) error
+	active []string
 }
 
-func (f *fakeSystemdClient) Status(context.Context, []string) (map[string]UnitState, error) {
-	return map[string]UnitState{}, nil
+func (f *fakeSystemdClient) Status(_ context.Context, units []string) (map[string]UnitState, error) {
+	out := map[string]UnitState{}
+	for _, u := range units {
+		if slices.Contains(f.active, u) {
+			out[u] = UnitState{Active: "active"}
+		}
+	}
+	return out, nil
 }
 func (f *fakeSystemdClient) Action(ctx context.Context, unit, action string) error {
 	if f.action != nil {
@@ -294,5 +303,107 @@ func TestDeletedFilesAPI(t *testing.T) {
 	}
 	if w := do(t, h, c, "GET", "/api/stacks", "", false); !strings.Contains(w.Body.String(), "symlinked files or folders") {
 		t.Fatalf("symlinks are reported: %s", w.Body)
+	}
+}
+
+func TestPlanUnits(t *testing.T) {
+	parents := map[string]string{"app.service": "vpn.service", "far.service": "vpn.service", "idle.service": "vpn.service"}
+	active := func(u string) bool { return u == "far.service" }
+	for _, test := range []struct {
+		units  []string
+		action string
+		want   string
+	}{
+		// a namespace exists before a container joins it, whatever the file order
+		{[]string{"app.service", "vpn.service", "web.service"}, "start", "start vpn.service, start web.service, start app.service"},
+		// dependents go first, also the running one in another stack; the stopped one stays stopped
+		{[]string{"vpn.service"}, "stop", "stop far.service, stop vpn.service"},
+		{[]string{"vpn.service"}, "restart", "stop far.service, restart vpn.service, start far.service"},
+		{[]string{"app.service", "vpn.service"}, "restart", "stop app.service, stop far.service, restart vpn.service, start app.service, start far.service"},
+		// a dependent alone, and a unit nothing shares, are ordinary
+		{[]string{"app.service"}, "restart", "restart app.service"},
+		{[]string{"web.service"}, "stop", "stop web.service"},
+	} {
+		var got []string
+		for _, step := range planUnits(test.units, test.action, parents, active) {
+			got = append(got, step.action+" "+step.unit)
+		}
+		if strings.Join(got, ", ") != test.want {
+			t.Errorf("%s %v:\n got %s\nwant %s", test.action, test.units, strings.Join(got, ", "), test.want)
+		}
+	}
+}
+
+// vpnServer has a VPN container whose network a container in its stack and one in another stack share
+func vpnServer(t *testing.T) (*Server, *http.Cookie, *[]string) {
+	t.Helper()
+	server, cookie := testServer(t)
+	for rel, content := range map[string]string{
+		"vpn/zvpn.container":   "[Container]\nImage=vpn\nContainerName=vpn\n",
+		"vpn/app.container":    "[Container]\nImage=app\nNetwork=container:vpn\n",
+		"other/qbit.container": "[Container]\nImage=qbit\nNetwork=zvpn.container\n",
+	} {
+		if err := server.files.Create(rel, content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	calls := &[]string{}
+	server.systemd = &fakeSystemdClient{active: []string{"app.service", "qbit.service"}, action: func(_ context.Context, unit, action string) error {
+		*calls = append(*calls, action+" "+unit)
+		if action == "restart" && unit == "zvpn.service" && slices.Contains(*calls, "fail") {
+			return errors.New("vpn did not come up")
+		}
+		return nil
+	}}
+	return server, cookie, calls
+}
+
+func TestSharedNetworkActions(t *testing.T) {
+	server, cookie, calls := vpnServer(t)
+	handler := server.Routes()
+	run := func(method, url, body string) Operation {
+		t.Helper()
+		*calls = (*calls)[:0]
+		operation := responseOperation(t, do(t, handler, cookie, method, url, body, true))
+		waitOperation(t, &server.operations, operation.ID)
+		final, _ := server.operations.Get(operation.ID)
+		return final
+	}
+
+	run("POST", "/api/unit-action", `{"unit":"zvpn.service","action":"restart"}`)
+	if want := []string{"stop app.service", "stop qbit.service", "restart zvpn.service", "start app.service", "start qbit.service"}; !reflect.DeepEqual(*calls, want) {
+		t.Fatalf("restart of the VPN unit: %v", *calls)
+	}
+	run("POST", "/api/unit-action", `{"unit":"zvpn.service","action":"stop"}`)
+	if want := []string{"stop app.service", "stop qbit.service", "stop zvpn.service"}; !reflect.DeepEqual(*calls, want) {
+		t.Fatalf("stop of the VPN unit: %v", *calls)
+	}
+	// app sorts before zvpn, but cannot join a namespace that does not exist yet
+	run("POST", "/api/stack-action", `{"stack":"d/vpn","action":"start"}`)
+	if want := []string{"start zvpn.service", "start app.service"}; !reflect.DeepEqual(*calls, want) {
+		t.Fatalf("start of the stack: %v", *calls)
+	}
+	run("PUT", "/api/file", `{"path":"vpn/zvpn.container","content":"[Container]\nImage=vpn:2\nContainerName=vpn\n","apply":"restart"}`)
+	if want := []string{"stop app.service", "stop qbit.service", "restart zvpn.service", "start app.service", "start qbit.service"}; !reflect.DeepEqual(*calls, want) {
+		t.Fatalf("deploy of the VPN unit: %v", *calls)
+	}
+}
+
+// Fail closed: when the VPN container did not come back, nothing that shares its network is started
+func TestDependentsNotStartedAfterParentFailure(t *testing.T) {
+	server, cookie, calls := vpnServer(t)
+	*calls = append(*calls, "fail")
+	operation := responseOperation(t, do(t, server.Routes(), cookie, "POST", "/api/stack-action", `{"stack":"d/vpn","action":"restart"}`, true))
+	if err := waitOperation(t, &server.operations, operation.ID); err == nil {
+		t.Fatal("the failed restart was swallowed")
+	}
+	if want := []string{"fail", "stop app.service", "stop qbit.service", "restart zvpn.service"}; !reflect.DeepEqual(*calls, want) {
+		t.Fatalf("systemd calls: %v", *calls)
+	}
+	final, _ := server.operations.Get(operation.ID)
+	for _, step := range final.Steps[3:] {
+		if step.State != "failed" || !strings.Contains(step.Error, "not attempted") {
+			t.Fatalf("dependent step: %+v", step)
+		}
 	}
 }
