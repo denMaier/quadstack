@@ -30,6 +30,33 @@ Q
 	chown -R quadlets: "$home/.config"
 fi
 
+# A stand-in for a VPN container such as gluetun, and two containers that share its network,
+# one for each way to write it. Added on its own, so an existing dev volume gets it too.
+if [ ! -d "$dir/vpn" ]; then
+	runuser -u quadlets -- mkdir -p "$dir/vpn"
+	cat >"$dir/vpn/vpn.container" <<'Q'
+[Container]
+Image=docker.io/library/alpine:3.20
+ContainerName=vpn
+Exec=sh -c 'trap "exit 0" TERM; sleep infinity & wait'
+PublishPort=127.0.0.1:8081:80
+Q
+	cat >"$dir/vpn/app.container" <<'Q'
+[Container]
+Image=docker.io/library/alpine:3.20
+Exec=sh -c 'trap "exit 0" TERM; sleep infinity & wait'
+Network=vpn.container
+Q
+	cat >"$dir/vpn/peer.container" <<'Q'
+# Network=container: adds no Requires=, unlike Network=vpn.container
+[Container]
+Image=docker.io/library/alpine:3.20
+Exec=sh -c 'trap "exit 0" TERM; sleep infinity & wait'
+Network=container:vpn
+Q
+	chown -R quadlets: "$dir/vpn"
+fi
+
 conf=$home/.config
 runuser -u quadlets -- mkdir -p "$conf/systemd/user/quadstack.service.d" "$conf/quadstack"
 install -o quadlets -m 0644 /usr/local/share/quadstack/quadstack.service "$conf/systemd/user/quadstack.service"
