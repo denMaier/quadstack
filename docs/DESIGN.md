@@ -28,6 +28,8 @@ Every file access, from the web UI or MCP, opens each path component with `O_NOF
 
 Every changing action (start, stop, restart, reload, delete, pull, prune, secrets) is an **operation** in `operations.go`: queued in memory, run one at a time, with a deadline, per-step state and output. The web API returns the operation at once and the UI follows it; MCP calls wait for it. A lost connection or a timeout is reported as `unknown` or `timed_out`, never as success, and nothing is retried automatically. Operations are lost on restart.
 
+**Shared network namespaces.** `Scan` records which container joins another's network namespace and which Quadlet defines that container (`linkNetns`). Every unit action is planned around these edges (`planUnits`): dependents are stopped before the container they depend on is stopped or restarted and started again after a restart, and on a start that container comes first. Only dependents that are part of the action or running now are included. Quadstack sends each step itself instead of relying on `Requires=`, which `Network=container:<name>` does not add.
+
 ## Sign-in
 
 OpenID Connect with PKCE, state and nonce, in `auth.go`. After the callback the claims are checked against `QUADSTACK_ALLOWED_USERS` and `QUADSTACK_ALLOWED_GROUPS`, and the session is a cookie signed with HMAC-SHA256 with a key in the state directory. It lasts 12 hours. Changing requests also need the header `X-Quadstack: 1`; websockets only accept the public URL as origin.

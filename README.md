@@ -38,6 +38,23 @@ Quadstack runs as a user service of the account that owns the Quadlets, with no 
 - An OIDC client whose redirect URI is `https://<your host>/auth/callback`.
 - A reverse proxy with TLS in front of Quadstack.
 
+## Containers behind a VPN container
+
+A container can use another container's network instead of its own, for example everything that must only talk through a VPN container such as gluetun:
+
+```ini
+# slskd.container
+[Container]
+Image=docker.io/slskd/slskd:latest
+Network=gluetun.container
+```
+
+`Network=gluetun.container` names the Quadlet file. Prefer it to `Network=container:gluetun`: only for this form does Podman add `Requires=` and `After=`, so systemd starts the VPN container first at boot and restarts both together after an auto-update. Quadstack understands both forms.
+
+- The container has no network of its own. Without the VPN container it cannot start; that is Podman's behavior, and Quadstack does nothing that would give it another network.
+- Publish its ports on the VPN container. `PublishPort=` on the container itself is ignored by Podman.
+- Stopping or restarting the VPN container takes the network away from the containers that share it. Quadstack therefore stops those first and starts them again after a restart, and shows them under **Mounts, networks & secrets**.
+
 ## Action feedback and recovery
 
 Activity keeps the 50 most recent operations in memory. Web actions continue on the server after navigation, page reloads, or a dropped browser connection; restarting Quadstack clears this history. Operations run one at a time to avoid replacing each other's systemd jobs. The queue accepts at most 16 pending operations. A normal operation has a five-minute deadline, including queue time; image-pull operations have fifteen minutes. Individual API and D-Bus calls also have deadlines.
