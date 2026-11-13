@@ -12,9 +12,13 @@ import (
 )
 
 type fakeSystemdConnection struct {
-	connected atomic.Bool
-	closed    atomic.Bool
-	start     func(context.Context, string, chan<- string) error
+	connected  atomic.Bool
+	closed     atomic.Bool
+	start      func(context.Context, string, chan<- string) error
+	list       func(context.Context, []string) ([]dbus.UnitStatus, error)
+	properties func(context.Context, string, string) (map[string]any, error)
+	enable     func(context.Context, []string, bool, bool) (bool, []dbus.EnableUnitFileChange, error)
+	disable    func(context.Context, []string, bool) ([]dbus.DisableUnitFileChange, error)
 }
 
 func newFakeSystemdConnection() *fakeSystemdConnection {
@@ -25,12 +29,27 @@ func newFakeSystemdConnection() *fakeSystemdConnection {
 
 func (conn *fakeSystemdConnection) Connected() bool { return conn.connected.Load() }
 func (conn *fakeSystemdConnection) Close()          { conn.closed.Store(true); conn.connected.Store(false) }
-func (conn *fakeSystemdConnection) ListUnitsByNamesContext(context.Context, []string) ([]dbus.UnitStatus, error) {
+func (conn *fakeSystemdConnection) ListUnitsByNamesContext(ctx context.Context, units []string) ([]dbus.UnitStatus, error) {
+	if conn.list != nil {
+		return conn.list(ctx, units)
+	}
 	return nil, nil
 }
 func (conn *fakeSystemdConnection) ReloadContext(context.Context) error { return nil }
-func (conn *fakeSystemdConnection) GetUnitTypePropertiesContext(context.Context, string, string) (map[string]any, error) {
+func (conn *fakeSystemdConnection) GetUnitPropertiesContext(ctx context.Context, unit string) (map[string]any, error) {
+	return conn.GetUnitTypePropertiesContext(ctx, unit, "Unit")
+}
+func (conn *fakeSystemdConnection) GetUnitTypePropertiesContext(ctx context.Context, unit, kind string) (map[string]any, error) {
+	if conn.properties != nil {
+		return conn.properties(ctx, unit, kind)
+	}
 	return map[string]any{"Result": "exit-code", "ExecMainStatus": int32(42)}, nil
+}
+func (conn *fakeSystemdConnection) EnableUnitFilesContext(ctx context.Context, files []string, runtime, force bool) (bool, []dbus.EnableUnitFileChange, error) {
+	return conn.enable(ctx, files, runtime, force)
+}
+func (conn *fakeSystemdConnection) DisableUnitFilesContext(ctx context.Context, files []string, runtime bool) ([]dbus.DisableUnitFileChange, error) {
+	return conn.disable(ctx, files, runtime)
 }
 func (conn *fakeSystemdConnection) StartUnitContext(ctx context.Context, unit, mode string, done chan<- string) (int, error) {
 	if conn.start != nil {

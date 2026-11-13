@@ -70,7 +70,6 @@ Image=docker.io/library/${name}:latest
 ContainerName=${name}
 ${inPod ? `Pod=${inPod}\n` : 'PublishPort=8080:80\n'}Volume=%h/appdata/${name}:/config:Z
 Environment=TZ=Europe/Berlin
-AutoUpdate=registry
 
 [Service]
 Restart=always

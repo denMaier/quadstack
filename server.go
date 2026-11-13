@@ -38,6 +38,8 @@ func (s *Server) Routes() http.Handler {
 	api := map[string]http.HandlerFunc{
 		"GET /api/me":                   s.me,
 		"GET /api/stacks":               s.stacks,
+		"GET /api/auto-update":          s.autoUpdate,
+		"PUT /api/auto-update":          s.setAutoUpdate,
 		"POST /api/stacks":              s.createStack,
 		"DELETE /api/stacks/{id...}":    s.removeStack,
 		"POST /api/stack-action":        s.stackAction,
@@ -197,7 +199,8 @@ type stackView struct {
 	*Stack
 	Units      map[string]UnitState `json:"units"`
 	Containers []Container          `json:"containers"`
-	State      string               `json:"state"` // running, partial, stopped, failed, empty
+	State      string               `json:"state"`      // running, partial, stopped, failed, empty
+	AutoUpdate string               `json:"autoUpdate"` // on, off, mixed, unknown, none (deployed policy)
 }
 
 func (s *Server) stacks(w http.ResponseWriter, r *http.Request) {
@@ -252,6 +255,7 @@ func (s *Server) overview(ctx context.Context) (*overview, error) {
 		o.warnings = append(o.warnings, err.Error())
 	}
 	containers, err := s.podman.Containers(ctx)
+	containersAvailable := err == nil
 	if err != nil {
 		o.warnings = append(o.warnings, err.Error())
 	}
@@ -270,6 +274,7 @@ func (s *Server) overview(ctx context.Context) (*overview, error) {
 			}
 		}
 		v.State = stackState(st.Units(), v.Units)
+		v.AutoUpdate = stackAutoUpdate(st, v.Containers, containersAvailable)
 		o.views = append(o.views, v)
 	}
 	return o, nil

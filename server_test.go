@@ -17,9 +17,11 @@ import (
 )
 
 type fakeSystemdClient struct {
-	action func(context.Context, string, string) error
-	reload func(context.Context) error
-	active []string
+	action     func(context.Context, string, string) error
+	reload     func(context.Context) error
+	active     []string
+	autoUpdate func(context.Context) (AutoUpdateTimer, error)
+	enablement func(context.Context, bool) error
 }
 
 func (f *fakeSystemdClient) Status(_ context.Context, units []string) (map[string]UnitState, error) {
@@ -40,6 +42,20 @@ func (f *fakeSystemdClient) Action(ctx context.Context, unit, action string) err
 func (f *fakeSystemdClient) Reload(ctx context.Context) error {
 	if f.reload != nil {
 		return f.reload(ctx)
+	}
+	return nil
+}
+
+func (f *fakeSystemdClient) AutoUpdateTimer(ctx context.Context) (AutoUpdateTimer, error) {
+	if f.autoUpdate != nil {
+		return f.autoUpdate(ctx)
+	}
+	return AutoUpdateTimer{Load: "not-found", Schedule: []string{}}, nil
+}
+
+func (f *fakeSystemdClient) AutoUpdateEnablement(ctx context.Context, enabled bool) error {
+	if f.enablement != nil {
+		return f.enablement(ctx, enabled)
 	}
 	return nil
 }

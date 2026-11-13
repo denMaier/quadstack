@@ -22,6 +22,7 @@ Quadstack runs as a user service of the account that owns the Quadlets, with no 
 - **Activity.** Managed actions are queued on the server, with per-step progress, elapsed time, deadlines, results, errors and links to logs. Navigating away or reloading the page does not cancel a web action. Connection loss and timeouts are reported explicitly, not as success; unavailable unit state is shown as unknown rather than stopped.
 - **Logs.** A live `journalctl` view per stack or per unit.
 - **Update.** Pulls the images of a stack's containers with live API progress in Activity and offers a restart afterwards.
+- **Scheduled updates.** The Stacks page can enable or disable the Quadlet owner's existing Podman auto-update timer and shows its schedule, next run and last result. Each stack shows its deployed containers' participation: on, off or mixed; unknown means a container has not been created or Podman is unavailable. Set `AutoUpdate=registry` in a container's `[Container]` section and deploy to opt in. New container templates leave it off.
 - **Shell.** Opens a container exec session through Podman's API in the browser. You can turn it off with `QUADSTACK_TERMINAL=false`.
 - **Networks & volumes.** Top-level `.network` and `.volume` files are shared resources rather than stacks, listed with the stacks that use them, next to the Podman networks and volumes no file defines. Each stack shows its containers' bind mounts, volumes, networks and secrets.
 - **Secrets.** Podman secrets: create, replace and delete, with the files that use each one. Values go only in the local API request body, never in a command line or Activity, and are never returned. In a container's editor, **Secrets** moves an `Environment=` value or a mounted key file into a secret and rewrites the line to `Secret=`.
@@ -56,6 +57,12 @@ Network=gluetun.container
 - Stopping or restarting the VPN container takes the network away from the containers that share it, and Podman refuses to replace a container while another one still depends on it, so with `Network=container:<name>` the restart itself fails. Quadstack therefore stops those containers first and starts them again after a restart, and shows them under **Mounts, networks & secrets**.
 
 ## Action feedback and recovery
+
+Scheduled updates use `podman-auto-update.timer` in the account's systemd user instance. The switch persistently enables and starts it, or stops and disables it, with each step recorded in Activity. Installing or restarting Quadstack leaves the existing timer state alone. Its schedule comes from the installed systemd unit, including any overrides. The timer updates all eligible running containers owned by the account, including containers outside Quadstack's managed files. Enabling it may run an overdue update immediately.
+
+The last result is what systemd still retains, rather than a permanent update history. It may disappear when systemd unloads an inactive unit.
+
+Podman performs scheduled pulls and restarts independently of Quadstack and its action queue, even when Quadstack is stopped. Turning off the timer does not cancel an update already running. Participation is read from deployed container labels, so changes to `AutoUpdate=` only appear after deployment; both `registry` (check and pull from the registry) and `local` (use a newer image already in local storage) count as on. A service or its systemd dependencies may restart other containers too. See [Podman's auto-update documentation](https://docs.podman.io/en/latest/markdown/podman-auto-update.1.html).
 
 Activity keeps the 50 most recent operations in memory. Web actions continue on the server after navigation, page reloads, or a dropped browser connection; restarting Quadstack clears this history. Operations run one at a time to avoid replacing each other's systemd jobs. The queue accepts at most 16 pending operations. A normal operation has a five-minute deadline, including queue time; image-pull operations have fifteen minutes. Individual API and D-Bus calls also have deadlines.
 
