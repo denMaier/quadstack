@@ -5,15 +5,21 @@ set -Eeuo pipefail
 cd "$(dirname "$0")/.."
 [[ -d /run/systemd/system ]] || { echo 'This test needs a Linux systemd host' >&2; exit 1; }
 as_root() { if ((EUID == 0)); then "$@"; else sudo -n "$@"; fi; }
-workspace=$(mktemp -d)
+workspace=$(mktemp -d /tmp/quadstack-systemd.XXXXXX)
 account=qs-ci-$$
 created=false
+dropin=""
 cleanup() {
   if [[ $created == true ]]; then
     as_root loginctl disable-linger "$account" || true
     as_root loginctl terminate-user "$account" || true
     as_root systemctl stop "user@$uid.service" "user-runtime-dir@$uid.service" || true
     as_root userdel --remove "$account" || true
+  fi
+  if [[ -n $dropin ]]; then
+    as_root rm -f "$dropin"
+    as_root rmdir "$(dirname "$dropin")" 2>/dev/null || true
+    as_root systemctl daemon-reload
   fi
   rm -rf "$workspace"
 }
@@ -27,6 +33,29 @@ chmod 0755 "$workspace" "$workspace/quadstack.test"
 as_root useradd --create-home --shell /bin/bash "$account"
 created=true
 uid=$(id -u "$account")
+account_home=$(getent passwd "$account" | cut -d: -f6)
+# User managers cache HOME/XDG paths at startup. Set them after PAM has populated the
+# service environment, so a hosted runner's imported paths cannot leak into this account.
+cat >"$workspace/user-manager" <<'SH'
+#!/bin/sh
+set -eu
+test_uid=$(id -u)
+test_home=$(getent passwd "$test_uid" | cut -d: -f6)
+exec /usr/bin/env HOME="$test_home" XDG_RUNTIME_DIR="/run/user/$test_uid" \
+  XDG_CONFIG_HOME="$test_home/.config" XDG_DATA_HOME="$test_home/.local/share" \
+  XDG_CACHE_HOME="$test_home/.cache" XDG_STATE_HOME="$test_home/.local/state" \
+  DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$test_uid/bus" \
+  /usr/lib/systemd/systemd --user
+SH
+chmod 0755 "$workspace/user-manager"
+printf '[Service]\nExecStart=\nExecStart=%s/user-manager\n' "$workspace" >"$workspace/user-manager.conf"
+dropin="/run/systemd/system/user@$uid.service.d/90-quadstack-ci.conf"
+as_root install -D -m 0644 "$workspace/user-manager.conf" "$dropin"
+as_root systemctl daemon-reload
+as_test_user() {
+  as_root runuser -u "$account" -- env HOME="$account_home" \
+    XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" "$@"
+}
 user_failure() {
   echo 'The disposable systemd user session did not start' >&2
   as_root systemctl --no-pager --full status "user@$uid.service" "user-runtime-dir@$uid.service" || true
@@ -37,11 +66,9 @@ as_root loginctl enable-linger "$account"
 # Hosted runners do not necessarily activate a fresh account's manager on enable-linger.
 as_root systemctl start "user@$uid.service" || user_failure
 for _ in {1..30}; do
-  [[ -S /run/user/$uid/bus ]] && break
+  as_root test -S "/run/user/$uid/bus" && break
   sleep 1
 done
-[[ -S /run/user/$uid/bus ]] || user_failure
-as_root runuser -u "$account" -- env \
-  XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
-  TMPDIR=/tmp QS_TEST_SYSTEMD=1 "$workspace/quadstack.test" \
+as_root test -S "/run/user/$uid/bus" || user_failure
+as_test_user env TMPDIR=/tmp QS_TEST_SYSTEMD=1 "$workspace/quadstack.test" \
   -test.run '^TestSystemdAutoUpdateIntegration$' -test.timeout 90s -test.v
