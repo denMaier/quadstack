@@ -93,6 +93,9 @@
     <a class="back" href="#/">‹</a>
     <h1>{stack.name}</h1>
     <span class="badge"><span class={'dot ' + stack.state}></span>{stack.state}</span>
+    {#if stack.autoUpdate !== 'none'}
+      <a href="#/" class="badge" title="Participation from deployed container labels. Change AutoUpdate= in the Quadlet files and deploy. Unknown means a container has not been created or Podman is unavailable. The shared timer is controlled on the Stacks page.">Auto updates: {stack.autoUpdate}</a>
+    {/if}
     {#if stack.id.startsWith('d/')}<span class="badge" title="Files live in this folder">folder</span>{/if}
     <span class="grow"></span>
     <button class="primary" disabled={actionBusy || !units.length} onclick={() => stackAction('start')}>▶ Start</button>

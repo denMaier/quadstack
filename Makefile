@@ -1,5 +1,5 @@
 NAME := quadstack
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+VERSION ?= $(shell cat VERSION)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 RELEASE_TARGETS := linux/amd64 linux/arm64
 

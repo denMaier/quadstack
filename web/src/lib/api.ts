@@ -2,6 +2,19 @@ import { activity, rememberOperation } from './operations.svelte'
 
 export type UnitState = { load: string; active: string; sub: string }
 
+export type AutoUpdateTimer = {
+  load: string
+  active: string
+  unitFileState: string
+  enabled: boolean
+  schedule: string[]
+  randomizedDelay: number
+  nextRun?: string
+  lastRun?: string
+  lastResult?: string
+  running: boolean
+}
+
 export type QFile = {
   path: string
   kind: string
@@ -57,6 +70,7 @@ export type Stack = {
   units: Record<string, UnitState>
   containers: Container[]
   state: 'running' | 'partial' | 'stopped' | 'failed' | 'empty' | 'busy' | 'unknown'
+  autoUpdate: 'on' | 'off' | 'mixed' | 'unknown' | 'none'
 }
 
 export type OperationStep = {
@@ -177,6 +191,8 @@ export type Apply = '' | 'reload' | 'restart'
 export const api = {
   me: () => call<Me>('GET', '/api/me'),
   operations: () => call<Operation[]>('GET', '/api/operations'),
+  autoUpdate: () => call<AutoUpdateTimer>('GET', '/api/auto-update'),
+  setAutoUpdate: (enabled: boolean) => tracked('PUT', '/api/auto-update', { enabled }),
   stacks: () => call<{ stacks: Stack[]; resources: Resource[]; warnings: string[] | null }>('GET', '/api/stacks'),
   createStack: (name: string) => call<{ id: string }>('POST', '/api/stacks', { name }),
   removeStack: (id: string) => call('DELETE', '/api/stacks/' + id),

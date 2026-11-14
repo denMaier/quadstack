@@ -17,6 +17,9 @@ type systemdConnection interface {
 	StopUnitContext(context.Context, string, string, chan<- string) (int, error)
 	RestartUnitContext(context.Context, string, string, chan<- string) (int, error)
 	GetUnitTypePropertiesContext(context.Context, string, string) (map[string]any, error)
+	GetUnitPropertiesContext(context.Context, string) (map[string]any, error)
+	EnableUnitFilesContext(context.Context, []string, bool, bool) (bool, []dbus.EnableUnitFileChange, error)
+	DisableUnitFilesContext(context.Context, []string, bool) ([]dbus.DisableUnitFileChange, error)
 	ReloadContext(context.Context) error
 }
 
@@ -24,6 +27,8 @@ type systemdClient interface {
 	Status(context.Context, []string) (map[string]UnitState, error)
 	Action(context.Context, string, string) error
 	Reload(context.Context) error
+	AutoUpdateTimer(context.Context) (AutoUpdateTimer, error)
+	AutoUpdateEnablement(context.Context, bool) error
 }
 
 // Systemd talks to the user's systemd instance over D-Bus

@@ -10,6 +10,7 @@
   import ImportDialog from './lib/ImportDialog.svelte'
   import Activity from './lib/Activity.svelte'
   import DeletedFiles from './lib/DeletedFiles.svelte'
+  import AutoUpdate from './lib/AutoUpdate.svelte'
   import { activity, isActive } from './lib/operations.svelte'
 
   let me = $state<Me>()
@@ -118,6 +119,7 @@
         <a href={'#/stack/' + encodeURIComponent(s.id)} class:active={s.id === stackID}>
           <span class={'dot ' + s.state}></span>
           <span class="grow name">{s.name}</span>
+          {#if s.autoUpdate !== 'none'}<span class="muted count" title={'Deployed auto-update participation: ' + s.autoUpdate + '. The shared timer is controlled on the Stacks page.'}>auto: {s.autoUpdate}</span>{/if}
           {#if s.id.startsWith('d/')}<span class="muted folder" title="Stack folder">▸</span>{/if}
           <span class="muted count">{s.files.filter((f) => f.unit).length}</span>
         </a>
@@ -158,6 +160,7 @@
           {#if counts.busy}<div class="panel"><span class="dot busy"></span><b>{counts.busy}</b> changing</div>{/if}
           {#if counts.unknown}<div class="panel"><span class="dot unknown"></span><b>{counts.unknown}</b> unknown</div>{/if}
         </div>
+        <AutoUpdate />
         {#if me}
           <p class="muted">Quadstack {me.version}, managing <code>{me.quadletDir}</code> on <b>{me.host}</b>.
             {#if !me.validation}<br />Podman's quadlet generator was not found, so files are saved without validation.{/if}</p>

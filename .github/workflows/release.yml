@@ -16,6 +16,8 @@ jobs:
     steps:
       # Actions are pinned to commits; the comment names the release
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Check release version
+        run: test "$GITHUB_REF_NAME" = "$(cat VERSION)"
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
