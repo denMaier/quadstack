@@ -27,12 +27,20 @@ chmod 0755 "$workspace" "$workspace/quadstack.test"
 as_root useradd --create-home --shell /bin/bash "$account"
 created=true
 uid=$(id -u "$account")
+user_failure() {
+  echo 'The disposable systemd user session did not start' >&2
+  as_root systemctl --no-pager --full status "user@$uid.service" "user-runtime-dir@$uid.service" || true
+  as_root journalctl --no-pager -b -u "user@$uid.service" -u "user-runtime-dir@$uid.service" -n 50 || true
+  exit 1
+}
 as_root loginctl enable-linger "$account"
+# Hosted runners do not necessarily activate a fresh account's manager on enable-linger.
+as_root systemctl start "user@$uid.service" || user_failure
 for _ in {1..30}; do
   [[ -S /run/user/$uid/bus ]] && break
   sleep 1
 done
-[[ -S /run/user/$uid/bus ]] || { echo 'The disposable user bus did not start' >&2; exit 1; }
+[[ -S /run/user/$uid/bus ]] || user_failure
 as_root runuser -u "$account" -- env \
   XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
   TMPDIR=/tmp QS_TEST_SYSTEMD=1 "$workspace/quadstack.test" \

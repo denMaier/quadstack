@@ -37,8 +37,8 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
-      # Podman brings the real quadlet generator, which the validation tests run against
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq podman
+      # The disposable account needs its own session bus, not only Podman's generator.
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq podman dbus-user-session uidmap passt
       - run: make web
       - run: make test
       - name: Lint workflows
