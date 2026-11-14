@@ -293,7 +293,7 @@ cd web && npm run dev   # Vite on :5173, proxying to a backend on :8090
 
 How it works and what it must always guarantee are in [`docs/DESIGN.md`](docs/DESIGN.md) and [`docs/GOVERNANCE.md`](docs/GOVERNANCE.md).
 
-To release, push a tag `vX.Y.Z`. GitHub Actions runs the tests and publishes `quadstack_linux_amd64`, `quadstack_linux_arm64` and `SHA256SUMS`, with the tag built in as the version, and a build provenance attestation for each binary. The workflows pin their actions to commits.
+`VERSION` holds the source version used by `make build`. To release, bump it in a PR, merge the PR, then push the matching `vX.Y.Z` tag on the merged commit. GitHub Actions checks that the tag matches `VERSION`, runs the tests and publishes `quadstack_linux_amd64`, `quadstack_linux_arm64` and `SHA256SUMS`, with the tag built in as the version, and a build provenance attestation for each binary. The workflows pin their actions to commits.
 
 The backend is Go: go-oidc, go-systemd (D-Bus), a typed `net/http` client for Podman's native API over a Unix socket, and coder/websocket. Podman runtime operations do not spawn a CLI. The Quadlet generator, optional podlet converter, and journalctl log reader remain external tools. The UI is Svelte 5 with CodeMirror 6 and xterm.js, embedded in the binary.
 
