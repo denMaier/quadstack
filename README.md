@@ -154,7 +154,7 @@ This lets the account, and so anyone who can sign in to Quadstack, read the whol
 
 ### Update
 
-Run the installer again and choose **update**, or do the same with `update` in an LXC it created. Update installs the binary and the managed `quadstack.service` from the same published release, reloads systemd, enables and starts the rootless Podman socket, and restarts Quadstack. Pushing source to `main` alone does not publish a release or update running hosts.
+Run the installer again and choose **update**, or do the same with `update` in an LXC it created. Choose the stable or preview channel next. Update installs the binary and the managed `quadstack.service` from the same published release, reloads systemd, enables and starts the rootless Podman socket, and restarts Quadstack. Publishing a build never updates running hosts automatically.
 
 Settings, Quadlets, history and systemd drop-ins stay. The main `quadstack.service` file is replaced; keep service customizations in `~/.config/systemd/user/quadstack.service.d/*.conf` instead of editing that file.
 
@@ -164,6 +164,21 @@ For an unattended update, run as root:
 QS_MODE=update QS_YES=1 \
   bash -c "$(curl -fsSL https://raw.githubusercontent.com/denMaier/quadstack/main/deploy/install.sh)"
 ```
+
+### Test preview builds on a device
+
+Every successful main build publishes an installable release: a stable version when `VERSION` has been bumped, or a preview otherwise. Previews include the source commit in their version, such as `v0.7.0-preview.20261114154004.g1b86edfe23d9`, and never replace the latest stable release.
+
+To put an existing installation on preview, run as root on that device:
+
+```sh
+QS_MODE=update QS_VERSION=preview QS_YES=1 \
+  bash -c "$(curl -fsSL https://raw.githubusercontent.com/denMaier/quadstack/main/deploy/install.sh)"
+```
+
+Use `QS_VERSION=stable` to return to stable, or an exact published tag to install a particular build. `QS_VERSION=latest` remains an alias for stable. Without an override, later updates stay on the installed channel; a new install defaults to stable. Choosing an exact tag applies to that install, rather than permanently pinning future updates. The interactive installer offers the same stable/preview selection. Preview discovery uses `jq`, which the installer installs with apt if needed; selecting an exact tag does not need it.
+
+The channel is inferred from the installed binary's version; there is no separate channel setting or branch checkout on the device. Both channels verify `SHA256SUMS` and use the service file from the resolved immutable tag. Check `~/.local/bin/quadstack -version` to see exactly which build is installed. The preview list is available on [GitHub Releases](https://github.com/denMaier/quadstack/releases).
 
 For a manual upgrade, replace both the binary and `~/.config/systemd/user/quadstack.service` with the files from the same release, then run as the account that owns the Quadlets:
 
@@ -293,7 +308,9 @@ cd web && npm run dev   # Vite on :5173, proxying to a backend on :8090
 
 How it works and what it must always guarantee are in [`docs/DESIGN.md`](docs/DESIGN.md) and [`docs/GOVERNANCE.md`](docs/GOVERNANCE.md).
 
-`VERSION` holds the source version used by `make build`. To release, bump it in a PR, merge the PR, then push the matching `vX.Y.Z` tag on the merged commit. GitHub Actions checks that the tag matches `VERSION`, runs the tests and publishes `quadstack_linux_amd64`, `quadstack_linux_arm64` and `SHA256SUMS`, with the tag built in as the version, and a build provenance attestation for each binary. The workflows pin their actions to commits.
+`VERSION` holds the next stable source version. Bump it in a PR and merge the PR to publish that release automatically after validation. Main builds whose version is already released publish immutable previews instead. No manual tag push is needed. CI runs tests, including real rootless Podman/systemd integration, then builds and smoke-tests static binaries on native amd64 and arm64 runners. The required `test` check covers all of these jobs.
+
+Publication uses those tested binaries, adds `SHA256SUMS` and build provenance attestations, then uploads everything to a draft before publishing it. Pull requests cannot publish. Main builds are queued; published tags and assets are never replaced. Re-run a failed CI run, or manually run CI on main, to recover an interrupted draft. A published commit is a no-op on rerun. All workflow actions are pinned to commits. The release helper and its tests use Python 3's standard library; the application gains no runtime dependency.
 
 The backend is Go: go-oidc, go-systemd (D-Bus), a typed `net/http` client for Podman's native API over a Unix socket, and coder/websocket. Podman runtime operations do not spawn a CLI. The Quadlet generator, optional podlet converter, and journalctl log reader remain external tools. The UI is Svelte 5 with CodeMirror 6 and xterm.js, embedded in the binary.
 

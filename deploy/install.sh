@@ -9,7 +9,8 @@
 # Every question can be answered in advance through the environment, for unattended runs:
 #   QS_USER QS_PUBLIC_URL QS_ISSUER QS_CLIENT_ID QS_CLIENT_SECRET QS_ALLOWED_GROUPS
 #   QS_ALLOWED_USERS QS_LISTEN QS_TERMINAL QS_MCP_MAX_HOURS QS_JOURNAL_ACL
-#   QS_MODE=install|update|reconfigure  QS_VERSION=v0.2.0 (default: latest)  QS_YES=1
+#   QS_MODE=install|update|reconfigure  QS_VERSION=stable|preview|vX.Y.Z  QS_YES=1
+#   New installs default to stable; updates default to the installed channel. Exact tags pin a build.
 #   QS_PODLET=1 installs podlet (for Import) without asking; unattended runs skip it otherwise
 set -Eeuo pipefail
 
@@ -187,15 +188,56 @@ envline() {
   printf '%s="%s"\n' "$1" "${v//\"/\\\"}"
 }
 
-resolve_version() {
-  if [[ -n ${QS_VERSION:-} && $QS_VERSION != latest ]]; then
-    echo "$QS_VERSION"
-    return
+valid_release_tag() {
+  [[ $1 =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-preview\.[0-9]{14}\.g[0-9a-f]{12})?$ ]]
+}
+
+select_version() {
+  if [[ -z ${QS_VERSION:-} ]]; then
+    if [[ ${CUR:-} == *-preview.* ]]; then
+      menu QS_VERSION "Build to install (currently ${CUR:-not installed})" \
+        preview "Preview of main, for testing on your devices" stable "Latest stable release"
+    else
+      menu QS_VERSION "Build to install (currently ${CUR:-not installed})" \
+        stable "Latest stable release" preview "Preview of main, for testing on your devices"
+    fi
   fi
-  local url
-  url=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest")
-  [[ $url == */tag/* ]] || die "Could not find the latest release"
-  echo "${url##*/}"
+  QS_VERSION=${QS_VERSION:-stable}
+  [[ $QS_VERSION == latest ]] && QS_VERSION=stable
+  case $QS_VERSION in
+    stable) ;;
+    preview)
+      if ! command -v jq >/dev/null 2>&1; then
+        command -v apt-get >/dev/null 2>&1 || die "Install jq to select preview builds, or set QS_VERSION to an exact preview tag"
+        msg_info "Installing jq to find preview builds"
+        DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq >/dev/null
+      fi
+      ;;
+    *) valid_release_tag "$QS_VERSION" || die "QS_VERSION must be stable, preview, or an exact vX.Y.Z / preview tag" ;;
+  esac
+}
+
+resolve_version() {
+  local tag url
+  case ${QS_VERSION:-stable} in
+    stable | latest)
+      url=$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest")
+      [[ $url == */tag/* ]] || die "Could not find the latest stable release"
+      tag=${url##*/}
+      [[ $tag != *-preview.* ]] || die "The stable release resolved to a preview"
+      ;;
+    preview)
+      tag=$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=100" | jq -er '
+        [.[] | select(.prerelease == true and .draft == false)
+          | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-preview\\.[0-9]{14}\\.g[0-9a-f]{12}$"))]
+        | max_by(.created_at).tag_name // error("No preview release is available")
+      ') || die "Could not find a published preview release; no version was changed"
+      ;;
+    *) tag=$QS_VERSION ;;
+  esac
+  valid_release_tag "$tag" || die "Invalid release tag: $tag"
+  printf '%s\n' "$tag"
 }
 
 install_binary() {
@@ -356,9 +398,10 @@ if [[ -n $EXISTING ]]; then
   ENVF=$(user_home "$EXISTING")/.config/quadstack/quadstack.env
   CUR=$("$(user_home "$EXISTING")/.local/bin/quadstack" -version 2>/dev/null || echo unknown)
   menu QS_MODE "Quadstack $CUR is installed for $EXISTING. What do you want to do?" \
-    update "Install the latest release, keep the settings" \
+    update "Update or switch stable/preview builds, keep the settings" \
     reconfigure "Change the settings (sign-in, address, …)"
   if [[ $QS_MODE == update ]]; then
+    select_version
     TAG=$(resolve_version)
     install_binary "$EXISTING" "$TAG"
     install_service "$EXISTING" "$TAG"
@@ -525,6 +568,7 @@ fi
 if [[ $QS_MODE == reconfigure ]]; then
   TAG=$CUR # only the settings change
 else
+  select_version
   TAG=$(resolve_version)
   install_binary "$QS_USER" "$TAG"
   install_podlet || msg_warn "podlet could not be installed; Import stays off"
