@@ -70,5 +70,9 @@ for _ in {1..30}; do
   sleep 1
 done
 as_root test -S "/run/user/$uid/bus" || user_failure
-as_test_user env TMPDIR=/tmp QS_TEST_SYSTEMD=1 "$workspace/quadstack.test" \
-  -test.run '^TestSystemdAutoUpdateIntegration$' -test.timeout 90s -test.v
+if ! as_test_user env TMPDIR=/tmp QS_TEST_SYSTEMD=1 "$workspace/quadstack.test" \
+  -test.run '^TestSystemdAutoUpdateIntegration$' -test.timeout 90s -test.v; then
+  # The test only sees unit results; the reasons are in the account's journal.
+  as_root journalctl --no-pager -b _UID="$uid" -n 150 || true
+  exit 1
+fi
