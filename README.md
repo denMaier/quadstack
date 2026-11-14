@@ -167,7 +167,7 @@ QS_MODE=update QS_YES=1 \
 
 ### Test preview builds on a device
 
-Every successful main build publishes an installable release: a stable version when `VERSION` has been bumped, or a preview otherwise. Previews include the source commit in their version, such as `v0.7.0-preview.20261114154004.g1b86edfe23d9`, and never replace the latest stable release.
+Every successful main build publishes an installable preview, including commits that also introduce a stable release. Previews include the source commit in their version, such as `v0.7.0-preview.20261114154004.g1b86edfe23d9`, and never replace the latest stable release.
 
 To put an existing installation on preview, run as root on that device:
 
@@ -308,7 +308,7 @@ cd web && npm run dev   # Vite on :5173, proxying to a backend on :8090
 
 How it works and what it must always guarantee are in [`docs/DESIGN.md`](docs/DESIGN.md) and [`docs/GOVERNANCE.md`](docs/GOVERNANCE.md).
 
-`VERSION` holds the next stable source version. Bump it in a PR and merge the PR to publish that release automatically after validation. Main builds whose version is already released publish immutable previews instead. No manual tag push is needed. CI runs tests, including real rootless Podman/systemd integration, then builds and smoke-tests static binaries on native amd64 and arm64 runners. The required `test` check covers all of these jobs.
+`VERSION` holds the next stable source version. Bump it in a PR and merge the PR to publish that release automatically after validation. Every main build also publishes an immutable preview, so test devices can follow main through stable-release commits too. No manual tag push is needed. CI runs tests, including real rootless Podman/systemd integration, then builds and smoke-tests static binaries on native amd64 and arm64 runners. The required `test` check covers all of these jobs.
 
 Publication uses those tested binaries, adds `SHA256SUMS` and build provenance attestations, then uploads everything to a draft before publishing it. Pull requests cannot publish. Main builds are queued; published tags and assets are never replaced. Re-run a failed CI run, or manually run CI on main, to recover an interrupted draft. A published commit is a no-op on rerun. All workflow actions are pinned to commits. The release helper and its tests use Python 3's standard library; the application gains no runtime dependency.
 

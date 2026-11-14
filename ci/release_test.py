@@ -1,7 +1,10 @@
 import copy
 import hashlib
+import io
+import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -75,6 +78,18 @@ class ReleaseTests(unittest.TestCase):
             self.github.latest = latest
             self.assertEqual(release.plan(self.github, "v0.7.0", SHA),
                              {"version": "v0.7.0", "channel": "stable", "published": False})
+
+    def test_stable_plan_also_emits_a_preview_for_test_devices(self):
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp) / "outputs"
+            with patch.object(release, "GitHub", return_value=self.github), \
+                    patch.object(release, "git", return_value=SHA), \
+                    patch.object(sys, "argv", ["release.py", "plan"]), \
+                    patch.dict(os.environ, {"GITHUB_SHA": SHA, "GITHUB_OUTPUT": str(output)}), \
+                    patch("sys.stdout", new_callable=io.StringIO):
+                release.main()
+            self.assertIn("channel=stable\n", output.read_text())
+            self.assertIn(f"preview_version={PREVIEW}\n", output.read_text())
 
     def test_normal_merge_becomes_preview(self):
         self.github.latest = {"tag_name": "v0.7.0"}

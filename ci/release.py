@@ -179,6 +179,8 @@ def main():
     github = GitHub(os.environ.get("GITHUB_REPOSITORY", "denMaier/quadstack"))
     if args.action == "plan":
         result = plan(github, source_version(), sha, args.preview_only)
+        # Preview devices must also receive commits that introduce a stable release.
+        result["preview_version"] = preview_version(source_version(), sha)
         print(json.dumps(result))
         if os.environ.get("GITHUB_OUTPUT"):
             with open(os.environ["GITHUB_OUTPUT"], "a") as output:
