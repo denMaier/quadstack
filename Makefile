@@ -3,7 +3,7 @@ VERSION ?= $(shell cat VERSION)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 RELEASE_TARGETS := linux/amd64 linux/arm64
 
-.PHONY: build web linux-amd64 release test clean
+.PHONY: build web linux-amd64 package release test clean
 
 web:
 	cd web && npm ci && npm run build
@@ -14,6 +14,11 @@ build: web
 linux-amd64: web
 	mkdir -p dist
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="$(LDFLAGS)" -o dist/$(NAME)_linux_amd64 .
+
+# The CI frontend artifact is already present; each native runner builds one architecture.
+package:
+	mkdir -p dist
+	CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="$(LDFLAGS)" -o dist/$(NAME)_linux_$(shell go env GOARCH) .
 
 release: web
 	rm -rf dist && mkdir -p dist
@@ -29,6 +34,7 @@ test:
 	go vet ./...
 	go test ./...
 	cd web && npx svelte-check --tsconfig ./tsconfig.json
+	python3 -m unittest discover -s ci -p '*_test.py'
 
 clean:
 	rm -rf dist $(NAME) web/dist

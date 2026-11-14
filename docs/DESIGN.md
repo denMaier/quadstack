@@ -51,3 +51,11 @@ OpenID Connect with PKCE, state and nonce, in `auth.go`. After the callback the 
 ## Deployment
 
 `deploy/install.sh` installs the release binary for an account, checks it against `SHA256SUMS`, writes `~/.config/quadstack/quadstack.env` and the user unit, and enables lingering and `podman.socket`. On Proxmox it creates an LXC with the community-scripts engine first. `make dev` builds the same setup in Docker with Dex as the identity provider.
+
+## Builds and releases
+
+One CI workflow checks pull requests and main, builds the frontend once, and builds and smoke-tests static Linux amd64 and arm64 binaries on native runners. A disposable Linux account runs the systemd/Podman integration test. The required `test` check succeeds only after checks and both architecture builds succeed. Pull requests publish no releases and have read-only tokens.
+
+Successful main builds always publish an installable preview prerelease named `vX.Y.Z-preview.COMMITDATE.gSHA`. If `VERSION` is newer than the latest stable release, the workflow additionally builds and publishes that stable version. A new version in a merged PR is the release decision. Preview devices therefore receive version-bump commits too. Main runs are queued, so publication cannot race. Manual runs on main recover failures. Publication of an already published commit is a no-op; published tags and assets are never replaced. Reserved tags must resolve to the built commit. Drafts can be resumed, and become public only after both binaries, checksums and provenance are complete. Publication uses the tested artifacts with a separate write-capable job, without a personal access token or a second tag-triggered workflow.
+
+The installer accepts `QS_VERSION=stable`, `preview` or an exact release tag. Stable is the default for a new install; an installed preview defaults to the preview channel on later updates. Interactive updates can switch channels, including back to stable. Preview resolution selects only published Quadstack preview prereleases; stable resolution uses GitHub's latest stable release. Both resolve once to an immutable tag before fetching the binary and matching service file, with checksum verification for either channel. No arbitrary branch builds or device deployment are performed by CI.

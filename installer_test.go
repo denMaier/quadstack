@@ -24,6 +24,115 @@ func installerSection(t *testing.T, installer, start, end string) string {
 	return section[:endIndex]
 }
 
+func TestInstallerReleaseSelection(t *testing.T) {
+	bashPath, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash is unavailable")
+	}
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq is unavailable (used to resolve the preview channel)")
+	}
+	installer, err := os.ReadFile("deploy/install.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	helpers := installerSection(t, string(installer), "valid_release_tag() {", "install_binary() {")
+	const latestPreview = "v0.7.0-preview.20261114170000.g0123456789ab"
+	const oldPreview = "v0.7.0-preview.20261113170000.gabcdef012345"
+	const releases = `[
+{"tag_name":"v0.7.0","draft":false,"prerelease":false,"created_at":"2026-11-14T18:00:00Z"},
+{"tag_name":"v0.7.0-preview.20261114170000.g0123456789ab","draft":false,"prerelease":true,"created_at":"2026-11-14T17:00:00Z","published_at":"2026-11-14T17:01:00Z"},
+{"tag_name":"v0.7.0-preview.20261113170000.gabcdef012345","draft":false,"prerelease":true,"created_at":"2026-11-13T17:00:00Z","published_at":"2026-11-14T19:00:00Z"},
+{"tag_name":"v0.8.0-preview.20261115170000.gabcdef012345","draft":true,"prerelease":true,"created_at":"2026-11-15T17:00:00Z"},
+{"tag_name":"v0.8.0-rc.1","draft":false,"prerelease":true,"created_at":"2026-11-16T17:00:00Z"}
+]`
+	const harness = `
+REPO=denMaier/quadstack
+die() { printf '%s\n' "$1" >&2; exit 1; }
+msg_info() { :; }
+menu() { printf -v "$1" '%s' "$3"; }
+curl() {
+  printf '%s\n' "${!#}" >>"$INSTALLER_TEST_REQUESTS"
+  if [[ $INSTALLER_TEST_FAILURE == 1 ]]; then return 22; fi
+  if [[ ${!#} == */releases/latest ]]; then
+    printf '%s\n' "$INSTALLER_TEST_REDIRECT"
+  else
+    printf '%s\n' "$INSTALLER_TEST_RELEASES"
+  fi
+}
+select_version
+tag=$(resolve_version)
+printf '%s\n' "$tag"
+`
+	for _, test := range []struct {
+		name, current, selected, redirect, response, want, errorText string
+		failure                                                      bool
+		requests                                                     int
+	}{
+		{name: "new install defaults to stable", want: "v0.7.0", requests: 1},
+		{name: "stable stays stable", current: "v0.6.1", want: "v0.7.0", requests: 1},
+		{name: "preview stays preview", current: oldPreview, want: latestPreview, requests: 1},
+		{name: "opt into preview", selected: "preview", want: latestPreview, requests: 1},
+		{name: "return to stable", current: oldPreview, selected: "stable", want: "v0.7.0", requests: 1},
+		{name: "latest alias stays stable", current: oldPreview, selected: "latest", want: "v0.7.0", requests: 1},
+		{name: "pin stable", selected: "v0.6.1", want: "v0.6.1"},
+		{name: "pin preview", selected: oldPreview, want: oldPreview},
+		{name: "reject branch", selected: "main", errorText: "QS_VERSION must"},
+		{name: "reject path", selected: "../main", errorText: "QS_VERSION must"},
+		{name: "reject leading zeros", selected: "v01.2.3", errorText: "QS_VERSION must"},
+		{name: "reject shell syntax", selected: "$(touch forbidden)", errorText: "QS_VERSION must"},
+		{name: "empty preview channel", selected: "preview", response: "[]", errorText: "Could not find a published preview", requests: 1},
+		{name: "malformed API response", selected: "preview", response: "not json", errorText: "Could not find a published preview", requests: 1},
+		{name: "API failure", selected: "preview", failure: true, errorText: "Could not find a published preview", requests: 1},
+		{name: "stable cannot resolve to preview", redirect: "https://github.com/denMaier/quadstack/releases/tag/" + oldPreview, errorText: "stable release resolved to a preview", requests: 1},
+		{name: "missing stable release", redirect: "https://github.com/denMaier/quadstack/releases", errorText: "Could not find the latest stable", requests: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			requests := filepath.Join(workspace, "requests")
+			if err := os.WriteFile(requests, nil, 0600); err != nil {
+				t.Fatal(err)
+			}
+			response, redirect := test.response, test.redirect
+			if response == "" {
+				response = releases
+			}
+			if redirect == "" {
+				redirect = "https://github.com/denMaier/quadstack/releases/tag/v0.7.0"
+			}
+			failure := ""
+			if test.failure {
+				failure = "1"
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			command := exec.CommandContext(ctx, bashPath, "-c", "set -Eeuo pipefail\n"+helpers+harness)
+			command.Dir = workspace
+			command.Env = append(os.Environ(), "QS_VERSION="+test.selected, "CUR="+test.current,
+				"INSTALLER_TEST_REQUESTS="+requests, "INSTALLER_TEST_REDIRECT="+redirect,
+				"INSTALLER_TEST_RELEASES="+response, "INSTALLER_TEST_FAILURE="+failure)
+			output, err := command.CombinedOutput()
+			if test.errorText != "" {
+				if err == nil || !strings.Contains(string(output), test.errorText) {
+					t.Fatalf("wanted %q, got %s, %v", test.errorText, output, err)
+				}
+			} else if err != nil || strings.TrimSpace(string(output)) != test.want {
+				t.Fatalf("version = %q, %v; want %s", output, err, test.want)
+			}
+			calls, err := os.ReadFile(requests)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Count(string(calls), "\n"); got != test.requests {
+				t.Fatalf("requests = %d, want %d", got, test.requests)
+			}
+			if _, err := os.Stat(filepath.Join(workspace, "forbidden")); err == nil {
+				t.Fatal("version executed shell syntax")
+			}
+		})
+	}
+}
+
 func TestInstallerUpdate(t *testing.T) {
 	bashPath, err := exec.LookPath("bash")
 	if err != nil {

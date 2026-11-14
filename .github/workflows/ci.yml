@@ -4,16 +4,31 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# Queue main builds through publication; never cancel a release halfway through upload.
+concurrency:
+  group: build-${{ github.event.pull_request.number || github.ref }}
+  queue: max
+  cancel-in-progress: false
+
 jobs:
-  test:
+  checks:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      channel: ${{ steps.release.outputs.channel }}
+      published: ${{ steps.release.outputs.published }}
+      preview_version: ${{ steps.release.outputs.preview_version }}
     steps:
       # Actions are pinned to commits; the comment names the release
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
@@ -22,10 +37,155 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
-      # Podman brings the real quadlet generator, which the validation tests run against
-      - run: sudo apt-get update -qq && sudo apt-get install -y -qq podman
+      # The disposable account needs its own session bus, not only Podman's generator.
+      - run: sudo apt-get update -qq && sudo apt-get install -y -qq podman dbus-user-session uidmap passt
       - run: make web
       - run: make test
+      - name: Lint workflows
+        # GitHub supports queue:max; actionlint v1.7.12 has not added that key yet.
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -ignore '^unexpected key "queue" for "concurrency" section'
+      - name: Test real systemd and rootless Podman
+        run: bash dev/test-systemd.sh
       # The Proxmox scripts use variables the community-scripts engine defines
-      - run: shellcheck -S warning deploy/install.sh
+      - run: shellcheck -S warning deploy/install.sh dev/test-systemd.sh
       - run: shellcheck -S warning -e SC1090,SC2034,SC2154 deploy/proxmox/ct/*.sh deploy/proxmox/install/*.sh
+      - name: Select build version
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH: ${{ github.ref == 'refs/heads/main' && github.event_name != 'pull_request' }}
+        run: |
+          if [[ $PUBLISH == true ]]; then
+            python3 ci/release.py plan
+          else
+            python3 ci/release.py plan --preview-only
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: web
+          path: web/dist
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  build:
+    needs: checks
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: web
+          path: web/dist
+      - name: Build and smoke-test the native static binary
+        env:
+          BUILD_VERSION: ${{ needs.checks.outputs.version }}
+          PREVIEW_VERSION: ${{ needs.checks.outputs.preview_version }}
+          CHANNEL: ${{ needs.checks.outputs.channel }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          for channel in preview stable; do
+            if [[ $channel == stable && $CHANNEL != stable ]]; then continue; fi
+            version=$PREVIEW_VERSION
+            if [[ $channel == stable ]]; then version=$BUILD_VERSION; fi
+            make package VERSION="$version"
+            mkdir -p "dist/$channel"
+            binary="dist/$channel/quadstack_linux_$ARCH"
+            mv "dist/quadstack_linux_$ARCH" "$binary"
+            test "$("./$binary" -version)" = "$version"
+            if readelf -l "$binary" | grep -q INTERP; then
+              echo 'The release binary must not require a dynamic linker' >&2
+              exit 1
+            fi
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: binary-${{ matrix.arch }}
+          path: dist
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  # Preserve the repository's required check name while covering every prerequisite.
+  test:
+    needs: [checks, build]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require checks and both native builds
+        env:
+          CHECKS_RESULT: ${{ needs.checks.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: test "$CHECKS_RESULT" = success && test "$BUILD_RESULT" = success
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: binary-*
+          path: dist
+          merge-multiple: true
+      - name: Assemble and verify complete release packages
+        env:
+          CHANNEL: ${{ needs.checks.outputs.channel }}
+        run: |
+          test -d dist/preview
+          if [[ $CHANNEL == stable ]]; then test -d dist/stable; fi
+          for directory in dist/*; do
+            (
+              cd "$directory"
+              sha256sum quadstack_linux_amd64 quadstack_linux_arm64 > SHA256SUMS
+              sha256sum --check SHA256SUMS
+            )
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-packages
+          path: dist
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  publish:
+    needs: [checks, build, test]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-packages
+          path: dist
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*/quadstack_linux_*
+      - name: Publish the tested artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_VERSION: ${{ needs.checks.outputs.version }}
+          PREVIEW_VERSION: ${{ needs.checks.outputs.preview_version }}
+          CHANNEL: ${{ needs.checks.outputs.channel }}
+        run: |
+          python3 ci/release.py publish --version "$PREVIEW_VERSION" --channel preview --directory dist/preview
+          if [[ $CHANNEL == stable ]]; then
+            python3 ci/release.py publish --version "$BUILD_VERSION" --channel stable --directory dist/stable
+          fi

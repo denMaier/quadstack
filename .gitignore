@@ -1,3 +1,4 @@
 /quadstack
 /dist
 quadstack.env
+__pycache__/
