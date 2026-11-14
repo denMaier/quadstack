@@ -62,6 +62,10 @@ user_failure() {
   as_root journalctl --no-pager -b -u "user@$uid.service" -u "user-runtime-dir@$uid.service" -n 50 || true
   exit 1
 }
+# Debian's environment.d imports /etc/environment after that, and hosted runners set the
+# runner's XDG paths there. Mask it for this account so the wrapper's paths stay in effect.
+as_root runuser -u "$account" -- mkdir -p "$account_home/.config/environment.d"
+as_root runuser -u "$account" -- touch "$account_home/.config/environment.d/99-environment.conf"
 as_root loginctl enable-linger "$account"
 # Hosted runners do not necessarily activate a fresh account's manager on enable-linger.
 as_root systemctl start "user@$uid.service" || user_failure
