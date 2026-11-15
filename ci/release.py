@@ -46,19 +46,29 @@ class GitHub:
             raise ValueError("invalid GitHub repository")
         self.repository = repository
 
-    def api(self, endpoint):
+    def api(self, endpoint, paginate=False):
+        flags = ["--paginate", "--slurp"] if paginate else []
         result = subprocess.run(
-            ["gh", "api", f"repos/{self.repository}/{endpoint}"],
+            ["gh", "api", *flags, f"repos/{self.repository}/{endpoint}"],
             text=True, capture_output=True, check=False,
         )
         if result.returncode:
             if "(HTTP 404)" in result.stderr:
                 return None
             raise RuntimeError(result.stderr.strip() or "GitHub API request failed")
-        return json.loads(result.stdout)
+        data = json.loads(result.stdout)
+        return [item for page in data for item in page] if paginate else data
 
     def release(self, tag):
-        return self.api(f"releases/tags/{tag}")
+        published = self.api(f"releases/tags/{tag}")
+        if published is not None:
+            return published
+        # A draft has no tag until it is published, so only the release list finds it.
+        drafts = [item for item in self.api("releases?per_page=100", paginate=True)
+                  if item["draft"] and item["tag_name"] == tag]
+        if len(drafts) > 1:
+            raise ValueError(f"several drafts exist for {tag}; delete the extras before retrying")
+        return drafts[0] if drafts else None
 
     def tag_commit(self, tag):
         ref = self.api(f"git/ref/tags/{tag}")

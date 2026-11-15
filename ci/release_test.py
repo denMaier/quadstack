@@ -210,6 +210,26 @@ class GitHubTests(unittest.TestCase):
         ]):
             self.assertEqual(github.tag_commit("v0.7.0"), SHA)
 
+    def test_draft_is_found_although_its_tag_does_not_exist_yet(self):
+        github = release.GitHub("owner/repo")
+        draft = {"tag_name": PREVIEW, "draft": True, "id": 2}
+        listing = [{"tag_name": "v0.6.1", "draft": False, "id": 1}, draft]
+        with patch.object(github, "api", side_effect=[None, listing]) as api:
+            self.assertEqual(github.release(PREVIEW), draft)
+        self.assertEqual(api.call_args_list[1].kwargs, {"paginate": True})
+        with patch.object(github, "api", side_effect=[None, listing[:1]]):
+            self.assertIsNone(github.release(PREVIEW))
+        with patch.object(github, "api", side_effect=[None, [draft, dict(draft, id=3)]]), \
+                self.assertRaisesRegex(ValueError, "several drafts"):
+            github.release(PREVIEW)
+
+    def test_paginated_listing_is_flattened(self):
+        github = release.GitHub("owner/repo")
+        result = subprocess.CompletedProcess([], 0, '[[{"id": 1}], [{"id": 2}]]', "")
+        with patch("subprocess.run", return_value=result) as run:
+            self.assertEqual(github.api("releases", paginate=True), [{"id": 1}, {"id": 2}])
+        self.assertIn("--slurp", run.call_args.args[0])
+
     def test_preview_identity_uses_commit_time_in_utc(self):
         with patch("release.git", return_value="2026-11-14T16:40:04+01:00"):
             self.assertEqual(release.preview_version("v0.7.0", SHA), PREVIEW)
