@@ -28,7 +28,23 @@ jobs:
     outputs:
       pr: ${{ steps.rp.outputs.pr }}
     steps:
+      # Main builds are queued. release-please reads the current main, so it
+      # must wait for CI of the newest commit: otherwise a merged release PR
+      # whose stable release is not published yet looks unreleased, and its
+      # changes are proposed again as the next version.
+      - id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILT: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ "$head" = "$BUILT" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "main is at $head; CI for it has not finished yet, so it will run this again"
+          fi
       - id: token
+        if: steps.latest.outputs.run == 'true'
         uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           app-id: ${{ secrets.RELEASE_BOT_ID }}
@@ -36,6 +52,7 @@ jobs:
       # skip-labeling: ci.yml publishes the release, so no "autorelease:
       # pending" label would ever be cleared, and it would block the next PR.
       - id: rp
+        if: steps.latest.outputs.run == 'true'
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
           token: ${{ steps.token.outputs.token }}
