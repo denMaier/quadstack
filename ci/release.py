@@ -18,12 +18,13 @@ ASSETS = ("quadstack_linux_amd64", "quadstack_linux_arm64", "SHA256SUMS")
 def version_numbers(value):
     match = STABLE.fullmatch(value)
     if not match:
-        raise ValueError("VERSION must be a stable version such as v0.7.0")
+        raise ValueError("VERSION must be a stable version such as 0.7.0")
     return tuple(map(int, match.groups()))
 
 
 def source_version():
-    version = Path("VERSION").read_text().strip()
+    # release-please writes VERSION as a bare number such as 0.7.0; tags carry the v.
+    version = "v" + Path("VERSION").read_text().strip().removeprefix("v")
     version_numbers(version)
     return version
 
