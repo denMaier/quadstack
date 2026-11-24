@@ -235,5 +235,30 @@ class GitHubTests(unittest.TestCase):
             self.assertEqual(release.preview_version("v0.7.0", SHA), PREVIEW)
 
 
+class SourceVersionTests(unittest.TestCase):
+    def test_bare_version_gets_the_tag_prefix(self):
+        # release-please writes VERSION as a bare number; an older v-prefixed file still works.
+        for content in ("0.7.0\n", "v0.7.0\n"):
+            with tempfile.TemporaryDirectory() as directory:
+                Path(directory, "VERSION").write_text(content)
+                cwd = os.getcwd()
+                os.chdir(directory)
+                try:
+                    self.assertEqual(release.source_version(), "v0.7.0")
+                finally:
+                    os.chdir(cwd)
+
+    def test_invalid_version_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "VERSION").write_text("0.7\n")
+            cwd = os.getcwd()
+            os.chdir(directory)
+            try:
+                with self.assertRaises(ValueError):
+                    release.source_version()
+            finally:
+                os.chdir(cwd)
+
+
 if __name__ == "__main__":
     unittest.main()

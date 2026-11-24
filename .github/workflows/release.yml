@@ -1,0 +1,74 @@
+name: Release PR
+
+# release-please decides the next stable version from the Conventional Commit
+# titles on main and keeps a release PR open that bumps VERSION and the
+# changelog. It never publishes: merging the PR changes VERSION, and ci.yml
+# then builds, verifies and publishes that stable release as before.
+#
+# It runs after CI on main has finished, so a stable release that CI has just
+# published is already visible when release-please looks for the last one.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-pr
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      pr: ${{ steps.rp.outputs.pr }}
+    steps:
+      - id: token
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          app-id: ${{ secrets.RELEASE_BOT_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_KEY }}
+      # skip-labeling: ci.yml publishes the release, so no "autorelease:
+      # pending" label would ever be cleared, and it would block the next PR.
+      - id: rp
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          token: ${{ steps.token.outputs.token }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          skip-github-release: true
+          skip-labeling: true
+
+  # A release made only of dependency fixes ships on its own; anything with
+  # your own feat/fix changes waits for you to merge the release PR.
+  automerge:
+    needs: release-please
+    if: needs.release-please.outputs.pr != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: token
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
+        with:
+          app-id: ${{ secrets.RELEASE_BOT_ID }}
+          private-key: ${{ secrets.RELEASE_BOT_KEY }}
+      - run: |
+          last=$(git describe --tags --abbrev=0 --match 'v*' --exclude '*-preview.*')
+          other=$(git log "$last"..HEAD --format=%s |
+            grep -vE '^(fix\(deps\)|ci|chore|docs|test|build|style|refactor)(\([^)]*\))?: ' || true)
+          if [ -n "$other" ]; then
+            printf 'Waiting for review; changes besides dependency fixes:\n%s\n' "$other"
+            exit 0
+          fi
+          gh pr merge --auto --squash "$PR"
+        env:
+          PR: ${{ fromJSON(needs.release-please.outputs.pr).number }}
+          GH_TOKEN: ${{ steps.token.outputs.token }}

@@ -1,5 +1,6 @@
 NAME := quadstack
-VERSION ?= $(shell cat VERSION)
+# VERSION holds a bare number (release-please writes it); tags carry the v.
+VERSION ?= v$(patsubst v%,%,$(shell cat VERSION))
 LDFLAGS := -s -w -X main.version=$(VERSION)
 RELEASE_TARGETS := linux/amd64 linux/arm64
 
