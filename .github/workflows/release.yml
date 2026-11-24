@@ -44,7 +44,8 @@ jobs:
           skip-github-release: true
           skip-labeling: true
 
-  # A release made only of dependency fixes ships on its own; anything with
+  # A release made only of dependency fixes ships on its own (deps-dev too:
+  # the UI's build tools shape what is embedded); anything with
   # your own feat/fix changes waits for you to merge the release PR.
   automerge:
     needs: release-please
@@ -63,7 +64,7 @@ jobs:
       - run: |
           last=$(git describe --tags --abbrev=0 --match 'v*' --exclude '*-preview.*')
           other=$(git log "$last"..HEAD --format=%s |
-            grep -vE '^(fix\(deps\)|ci|chore|docs|test|build|style|refactor)(\([^)]*\))?: ' || true)
+            grep -vE '^(fix\(deps(-dev)?\)|ci|chore|docs|test|build|style|refactor)(\([^)]*\))?: ' || true)
           if [ -n "$other" ]; then
             printf 'Waiting for review; changes besides dependency fixes:\n%s\n' "$other"
             exit 0
