@@ -6,11 +6,11 @@ require (
 	github.com/coder/websocket v1.8.15
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/coreos/go-systemd/v22 v22.7.0
-	github.com/go-jose/go-jose/v4 v4.1.6
-	github.com/godbus/dbus/v5 v5.1.0
+	github.com/go-jose/go-jose/v4 v4.1.9
+	github.com/godbus/dbus/v5 v5.2.4
 	github.com/modelcontextprotocol/go-sdk v1.8.0
-	golang.org/x/oauth2 v0.37.0
-	golang.org/x/sys v0.41.0
+	golang.org/x/oauth2 v0.38.0
+	golang.org/x/sys v0.50.0
 )
 
 require (
